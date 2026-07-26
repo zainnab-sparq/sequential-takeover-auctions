@@ -628,7 +628,7 @@ def bid_grid_refinement_experiment():
         for theta in REFINE_TOEHOLDS:
             good = [s for s in solved
                     if s["params"]["num_bids"] == num_bids
-                    and s["params"]["toehold"] == theta and s["converged"]]
+                    and s["params"]["toehold"] == theta and _accepted(s)]
             if not good:
                 print(f"  levels={num_bids}  toehold={theta:.2f}  no restart converged")
                 continue
@@ -836,6 +836,44 @@ def certify():
           "NashConv should reach ~1e-6 where the game is not flat", flush=True)
     equilibrium_selection_experiment()
     rounds_compounding_experiment()
+
+
+def certify_grid():
+    """Re-run the bid-grid refinement at probe precision, closing the fine-grid gap.
+
+    At the default budget the refinement study converges 6/6 restarts at 9 levels but only
+    3/6 at 7 and 1/6 at 13: a finer grid means a bigger tree and fictitious play converges
+    more slowly, so the 13-level cells carry almost no evidence. The committed figure
+    therefore shows the deterrence band surviving from 7 to 9 levels and says nothing at 13,
+    which is exactly the resolution a referee would press on, since the whole point of the
+    study is whether multiplicity is a discretisation artifact.
+
+    This runs all three resolutions at the certify budget so the comparison is like-for-like
+    (a band measured at 2e6 iterations against one measured at 3e5 would not be), and
+    accepts by achieved NashConv rather than the reached-tolerance flag, for the reason
+    given in the ACCEPT_EPS note.
+
+    Read the outcome as follows. If the deterrence band still fails to close at 13 levels,
+    the multiplicity is confirmed not to be a discretisation artifact and the paper's
+    limitation about the fine grid can be dropped. If the band *does* close, the multiplicity
+    is partly a coarse-grid effect at fine resolution and the paper's central claim needs
+    restating, not deleting: it would then hold on the grids studied but not in the limit.
+
+    This is the slowest study in the suite (54 solves, the 13-level trees being much the
+    largest). Expect well over a day of wall-clock. Run it detached:
+        docker run --rm -v "<repo>:/work" imperfect-info:latest \\
+            python experiments/sequential_general_sum.py certify_grid
+    """
+    global MAX_ITERATIONS, TOLERANCE, ACCEPT_EPS
+    MAX_ITERATIONS = CERTIFY_ITERATIONS
+    TOLERANCE = CERTIFY_TOLERANCE
+    ACCEPT_EPS = CERTIFY_ACCEPT_EPS
+    print(f"== CERTIFY GRID: {CERTIFY_ITERATIONS} rounds, tolerance {CERTIFY_TOLERANCE:.0e} ==",
+          flush=True)
+    print(f"  resolutions {REFINE_BIDS} x toeholds {REFINE_TOEHOLDS} "
+          f"x {NUM_RESTARTS} restarts, all at the same budget", flush=True)
+    print("  under test: does the deterrence band close as the grid refines?", flush=True)
+    bid_grid_refinement_experiment()
 
 
 def main():
