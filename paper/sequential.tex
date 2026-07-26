@@ -1,0 +1,271 @@
+\documentclass[11pt,a4paper]{article}
+
+% ============================================================
+% Packages
+% ============================================================
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{float}
+\usepackage{fontawesome5}
+\usepackage[most]{tcolorbox}
+\usepackage[colorlinks=true,linkcolor=blue!60!black,citecolor=blue!60!black,urlcolor=blue!60!black]{hyperref}
+\hypersetup{
+  pdftitle={Does a Toehold Make a Bidder Bolder? Preemption and Multiplicity in Multi-Round Takeover Auctions},
+  pdfauthor={Zain Naboulsi},
+  pdfsubject={Imperfect-information games, takeover auctions, toeholds, reinforcement learning},
+  pdfkeywords={sequential auctions, toeholds, preemptive bidding, equilibrium multiplicity, imperfect-information games, policy gradient, exploitability, OpenSpiel}
+}
+\usepackage{natbib}
+
+% ============================================================
+% Brand colors
+% ============================================================
+\definecolor{sparqcoral}{HTML}{C94A2A}
+\definecolor{sparqcorallight}{HTML}{FFF5F2}
+\definecolor{sparqcoralborder}{HTML}{E8634A}
+
+\newcommand{\theold}{\theta}   % toehold symbol shorthand
+
+\begin{document}
+
+% ============================================================
+% Custom title block
+% ============================================================
+\begin{center}
+  {\LARGE\bfseries\color{sparqcoral}%
+    Does a Toehold Make a Bidder Bolder?\\[0.3em]
+    Preemption and Multiplicity in Multi-Round Takeover Auctions\par}
+  \vspace{1em}
+  {\large Zain Naboulsi}\\[0.3em]
+  Principal AI Engineer, Sparq\\[0.2em]
+  \texttt{zain.naboulsi@teamsparq.com}
+\end{center}
+
+\vspace{0.8em}
+
+% ============================================================
+% Abstract box
+% ============================================================
+\begin{tcolorbox}[
+  colback=sparqcorallight,
+  colframe=sparqcoralborder,
+  arc=3pt,
+  boxrule=1pt,
+  left=10pt, right=10pt, top=10pt, bottom=10pt,
+  title={\textbf{Abstract}},
+  fonttitle=\normalsize,
+  coltitle=white,
+  colbacktitle=sparqcoral,
+  attach boxed title to top left={yshift=-2mm, xshift=5mm},
+  boxed title style={arc=2pt, boxrule=0pt}
+]
+A \emph{toehold}, a stake in a target quietly acquired before a takeover contest, is supposed to make a bidder bid more aggressively and scare off rivals. Theory has long predicted this advantage, yet toeholds are rare in practice: the ``toehold puzzle.'' We ask whether the predicted deterrence survives in a contest that actually unfolds over several rounds, rather than the one or two moves earlier models assume. Building on our companion study of sealed takeover auctions, we cast a multi-round ascending common-value takeover auction with a toehold as a two-player imperfect-information game and solve for its own-profit Bayes-Nash equilibria on small instances, certified as $\varepsilon$-equilibria with $\varepsilon$ on the order of $10^{-6}$, using a forced-opening best-response construction that reads the value of a preemptive jump bid without trusting any single solver run. Three findings reshape the picture. First, the game has \emph{multiple} equilibria that give the toehold-holder the identical profit yet differ completely in conduct: in one the rival reads a jump bid as strength and folds a third of the time, in another it never folds and no one preempts. So deterrence is not pinned down by the toehold. Second, and decisively, preemption occurs even at a \emph{zero} toehold, so preemption is not something a toehold buys. Third, the clean ``bigger toehold, more deterrence'' relationship that classical two-move models predict is real at exactly one round and \emph{dissolves} as the contest lengthens: raising the toehold from 15\% to 30\% lifts deterrence sharply, by about three-quarters, in a single-round, two-move contest, buys nothing once the contest has a genuine second round, and by the third round the equilibria multiply and deterrence is no longer pinned down at all. The toehold's deterrence channel is an artifact of the two-move approximation, which rationalizes the toehold puzzle: the bidding edge that would justify taking a toehold is not identified in a real multi-round contest. On the computational side we benchmark deep and exact solvers on the sequential game, finding that a generic policy-gradient method (PPG) reaches a near-exact equilibrium while a standard imperfect-information baseline (NFSP) fails to converge on the same budget, and we extend the analysis into a multi-round multi-signal regime too large to enumerate, where exact solvers cannot run. We release the games, solvers, and experiments.
+
+\vspace{0.8em}
+\noindent\begin{minipage}[b]{0.82\linewidth}
+  \footnotesize\raggedright\mbox{\faGithub\ \url{https://github.com/zainnab-sparq/sequential-takeover-auctions}}
+\end{minipage}%
+\hfill
+\begin{minipage}[b]{0.16\linewidth}
+  \raggedleft
+  {\small\textsf{\textbf{Sparq}}}
+\end{minipage}
+\end{tcolorbox}
+
+\vspace{0.4em}
+\noindent\textbf{Keywords:} sequential takeover auctions, toeholds, preemptive bidding, equilibrium multiplicity, imperfect-information games, policy gradient, exploitability, OpenSpiel
+
+% ============================================================
+\section{Introduction}
+% ============================================================
+
+A bidder who already owns a slice of a target enters a takeover contest differently from one who owns nothing. That slice, a \emph{toehold}, changes the arithmetic of winning and losing: the toehold-holder collects a share of whatever price the eventual winner pays, so it is willing to bid more aggressively, and a rival, anticipating that aggression, may decline to compete at all. This is the toehold's celebrated deterrence or ``aggressiveness'' channel \citep{bulow1999,fishman1988}. It is also the source of a long-standing empirical puzzle: if a toehold confers a bidding edge, bidders should acquire toeholds routinely before launching a bid, yet in practice they seldom do. Explanations invoke the cost of tipping off the market, legal disclosure thresholds, or the risk of being seen as hostile. We ask a different question: is the predicted bidding edge even there, once the contest is modeled as it actually plays out, over several rounds of escalation rather than a single sealed bid or a two-move exchange?
+
+Our companion paper studied \emph{sealed}, simultaneous takeover auctions, where each bidder submits one bid and the toehold's aggressiveness channel is competed away, so a sealed model cannot express preemption at all. That paper asserted, but could not show, that the channel ``lives in sequential, asymmetric contests.'' This paper makes the sequential contest the object of study and turns the assertion into a result, though not the result we expected. We model a multi-round ascending common-value auction in which a toehold-holder and a rival alternate, each able to jump to any higher price on a discrete grid or to pass, with the bid history public and each bidder's due-diligence signals private. We solve for the game's own-profit Bayes-Nash equilibria on small instances, to certified $\varepsilon$-equilibria, and, crucially, measure the economic value of a preemptive jump bid with a construction that does not depend on any solver converging to a particular equilibrium.
+
+The results overturn the simple story in three steps. Equilibria are \emph{multiple}: independent solves land on the same profit for the toehold-holder to four decimals and on completely different conduct, one preempting and one not, because ``I preempt because you fold, you fold because I preempt'' and ``I open low because you will not fold'' are both self-consistent. Preemption survives at a \emph{zero} toehold, so it is a feature of the sequential structure, not a purchase the toehold makes. And the tidy monotone relationship between toehold size and deterrence that classical two-move models deliver is an artifact of stopping at two moves: it holds at one round, saturates at two, and by three rounds the equilibria multiply and deterrence spans its whole range regardless of the toehold. The channel does not decay gradually as the contest lengthens; it is gone by the second round.
+
+We make three contributions. (1) To our knowledge this is the first computational solve, to certified $\varepsilon$-equilibria, of a genuinely multi-round ascending common-value takeover auction with a toehold, including a forced-opening best-response tool (itself exact) that reads preemption incentives without trusting solver convergence. (2) We establish equilibrium multiplicity and the two-move artifact as the central economic findings, reconciling them with the signalling account of preemptive bidding \citep{fishman1988} and with the toehold puzzle. (3) On the computational side we benchmark deep and exact solvers on the sequential game and extend to a multi-round, multi-signal regime beyond exact enumeration, showing which methods still work when the game outruns the exact solvers. All games, solvers, and experiments are released.
+
+% ============================================================
+\section{Related work}
+% ============================================================
+
+\paragraph{Toeholds and preemptive bidding.} The idea that a toehold makes a bidder more aggressive, lowering a rival's chance of winning, is classic \citep{bulow1999,klemperer1999}. Preemptive \emph{jump} bidding, bidding above the minimum required to signal strength and deter entry, was formalized by \citet{fishman1988} as a \emph{signalling} phenomenon: a high bid credibly conveys a high valuation, and a rival holding a weak signal infers that competing means overpaying, so it withdraws. Crucially, Fishman's mechanism requires no toehold. \citet{avery1998} showed jump bidding can arise even in a setting with no private information to signal, as a coordination device. \citet{danielhirshleifer2018} develop a costly sequential bidding model in which each bid entails a cost, generating preemptive first bids and infrequent competition. Closest to our setting, \citet{dodonova2012} studies toeholds and signalling in takeover auctions in a compact model; our multi-round treatment reproduces the classical prediction that a larger toehold deters more, in a short contest, and then shows the prediction does not survive additional rounds. Empirically, toeholds are rarer than the classical edge would predict, the toehold puzzle, a tension our multiplicity and two-move-artifact findings speak to directly.
+
+\paragraph{Common-value auctions and the winner's curse.} Bidding in a common-value auction requires shading against the adverse selection of winning \citep{capen1971,milgromweber1982,wilson1977}. Our game is common-value with noisy private signals, and the preemption mechanism we find is a winner's-curse inference: a rival that reads a jump bid as evidence of a high common value folds, because competing would mean winning mainly in the states where its own signal is misleadingly high. This is the same inference as in \citet{fishman1988}, realized computationally.
+
+\paragraph{Computational game solving.} Exact and sampling solvers for imperfect-information games, counterfactual regret minimization \citep{cfr2007,deepcfr2019}, magnetic mirror descent \citep{mmd2023}, and policy-space response oracles \citep{psro2017}, have mostly been developed on recreational benchmarks. Generic deep reinforcement learning, PPO \citep{ppo2017}, PPG \citep{ppg2021}, and NFSP \citep{nfsp2016}, has been argued to rival specialized machinery on such games \citep{rudolph2026}, and multi-agent reinforcement learning is increasingly used to analyze auction mechanisms directly \citep{deon2024}. Sequential, asymmetric games are the setting where specialized regret-based solvers are expected to have the largest edge, so they are a sharp test. We benchmark both families on our sequential auction and, following our companion paper, use a learned-best-response exploitability estimate \citep{openspiel2019} when the game grows beyond exact enumeration.
+
+% ============================================================
+\section{A multi-round takeover auction with a toehold}
+% ============================================================
+
+\paragraph{Primitives.} Two risk-neutral bidders compete for a target of common value $W$, drawn uniformly from a grid of $\mathrm{num\_values}$ levels. Each bidder $i$ receives $k=\mathrm{num\_signals}$ noisy private signals of $W$; with probability $1-\mathrm{signal\_noise}$ a signal equals $W$ and otherwise is uniform on the value grid. Bidder $0$ holds a toehold $\theold\in[0,1)$: a fraction of the target it already owns. Prices lie on a discrete grid of $\mathrm{num\_bids}$ levels spaced by $\mathrm{bid\_step}$.
+
+\paragraph{Protocol.} The auction is an ascending, alternating-move contest of up to $R=\mathrm{num\_rounds}$ rounds. On its turn a bidder either \emph{raises}, jumping to any grid price strictly above the standing bid (a jump bid is thus available, not just the minimum increment), or \emph{passes}. Passing while behind ends the auction and the standing bidder wins; both passing with no standing bid ends it with no sale; otherwise play continues until the round limit. The bid history, standing bid, whose turn it is, and round index, is public and carried in each bidder's information state; a bidder's own signals stay private; the game has perfect recall. Because raises must strictly increase, the number of raises is bounded by the price grid: the tree depth is capped by $\mathrm{num\_bids}$, not by $R$, so added rounds deepen the contest only while $\mathrm{num\_bids}\gtrsim 2R$.
+
+\paragraph{Payoffs.} If bidder $1$ wins at price $p$ it earns $W-p$ and the toehold-holder earns $\theold\, p$ (it sells its share into the winning price). If the toehold-holder wins at price $p$ it earns $W-(1-\theold)p$, paying only for the fraction it does not already own. The setup reduces, at $\mathrm{num\_rounds}=1$, to a sealed-equivalent sanity check, and matches the payoff contract of our companion sealed game so the two are directly comparable on an identical grid.
+
+\paragraph{Encoding.} The game is implemented as an OpenSpiel \citep{openspiel2019} extensive-form game with the bid history as public observation tokens and the private signals as one-hot features. Perfect recall and the information-set structure (own signals hidden, bid history public) are enforced by construction and checked by unit tests; exact counterfactual regret minimization drives exploitability below $0.01$ on small instances, confirming the solver converges on the encoding as expected.
+
+% ============================================================
+\section{Solving for own-profit equilibria}
+% ============================================================
+
+Standard solvers optimize the zero-sum rendering of a game. The economics we care about live in each bidder's \emph{own profit}, a general-sum object. We therefore solve for own-profit Bayes-Nash equilibria with extensive-form fictitious play: at each iteration each bidder computes an own-profit best response by traversing the tree and scoring terminals with raw profits (not zero-sum returns), then behavioral strategies are averaged and the own-profit NashConv (the summed best-response gain) is tracked as an $\varepsilon$-equilibrium certificate. General-sum Nash is PPAD-hard, so no solver is owed a unique answer; we treat convergence as an empirical property to be verified, not assumed.
+
+\paragraph{Reading economics without trusting the solver.} A comparative static read off a single fictitious-play solve is unreliable, because the solve silently selects one equilibrium out of possibly many. We therefore add a \emph{forced-opening best-response} construction: we pin a bidder's opening information sets to a chosen bid while letting every later decision best-respond exactly, and sweep the forced opening across the price grid to trace the profit of each possible jump bid. Because each information set lives at a single tree depth, this pins exactly the opening and nothing else. The construction is validated against a brute-force enumeration over every pure opening policy, and it measures what a preemptive jump is worth \emph{without any reliance on fictitious play converging}, breaking the circularity of reading economics off a solve that is itself in question.
+
+% ============================================================
+\section{Equilibrium multiplicity: same value, different deterrence}
+% ============================================================
+
+The central empirical fact is that in the sequential toehold auction the equilibrium \emph{value} is pinned but the equilibrium \emph{behavior} is not. Independent fictitious-play restarts converge to the same own profit for the toehold-holder to four decimals and to completely different conduct. Table~\ref{tab:multiplicity} reports representative pairs. At a toehold of $0.05$, two profiles that give the identical value $0.2715$ deter the rival with probability $0.002$ and $0.333$; the preempting profile is certified as an $\varepsilon$-Nash equilibrium with $\varepsilon\approx 4\times10^{-6}$ and the passive profile, which converges more slowly, with $\varepsilon\approx 8\times10^{-5}$. The same contrast recurs across the toehold range.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{cccc}
+\toprule
+Toehold $\theold$ & Bidder-0 value & Deterrence (profile A) & Deterrence (profile B) \\
+\midrule
+$0.00$ & $0.184$ & $0.000$ & $0.333$ \\
+$0.05$ & $0.2715$ & $0.002$ & $0.333$ \\
+$0.15$ & $0.4554$ & $0.220$ & $0.333$ \\
+\bottomrule
+\end{tabular}
+\caption{Equilibrium multiplicity in the three-round auction. Each row shows two profiles, each an $\varepsilon$-Nash equilibrium with $\varepsilon$ on the order of $10^{-6}$ to $10^{-5}$, that give the toehold-holder the same value but deter the rival with very different probability. Deterrence is not identified by the toehold.}
+\label{tab:multiplicity}
+\end{table}
+
+\paragraph{Why, mechanically.} The forced-opening profit curve shows both conducts are self-consistent (Figure~\ref{fig:mechanism}). Against a rival that folds to a jump, opening with a jump earns a $24\text{--}31\%$ premium over opening at the bottom of the grid; against a rival that does not fold, the premium is $2\text{--}5\%$. So ``I preempt because you fold, you fold because I preempt'' and ``I open low because you will not fold, you will not fold because I open low'' are both equilibria. This is coordination-style multiplicity, not solver failure. As a control, against a \emph{uniform}, unbluffable rival the forced-opening curve slopes straight down with a zero jump premium: a jump bid buys deterrence, and deterrence is worthless against a rival that cannot be deterred.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{../results/seq_preemption_incentive.png}
+\caption{Forced-opening best-response profit for the toehold-holder as a function of the opening bid it commits to, with every later decision best-responding. Against a rival that folds to a jump (left) profit peaks at a preemptive jump; against a rival that does not fold (middle) the peak is muted; against a rival bidding at random, which cannot be deterred (right, the control), profit slopes straight down from the cheapest opening with no jump premium. A jump bid only pays when it can scare a rival off, which is why both the preempting and the non-preempting conduct are self-consistent equilibria.}
+\label{fig:mechanism}
+\end{figure}
+
+\paragraph{Preemption at a zero toehold.} The decisive observation is in the first row of Table~\ref{tab:multiplicity}. At $\theold=0$, some restarts still converge on a profile in which the toehold-holder jump-bids and the rival folds a third of the time, certified at $\varepsilon\approx 3\times10^{-6}$. \emph{Preemption is not something the toehold buys.} The toehold sets the toehold-holder's profit; the sequential structure is what makes preemption possible; which equilibrium is played is a matter of coordination. The original hypothesis, that a toehold buys a preemptive jump bid and revives the aggressiveness channel, is false as a causal claim.
+
+\paragraph{A methodological caution.} Reaching this conclusion required checking the full set of restarts, not a sample. An early analysis re-ran three restarts at a tight tolerance, saw them agree, and wrongly concluded a competing equilibrium was a numerical artifact; two other restarts converged to it at $\varepsilon\approx1.5\times10^{-6}$. When testing for multiplicity, a sample of restarts that agree proves nothing, because the disagreeing basin may simply not be in the sample. Likewise, a fictitious-play run that stops \emph{at} its tolerance has not converged, it has been let go; every load-bearing number here was re-run with the tolerance set far below what the run can reach, so the compute budget, not the stopping rule, ended it.
+
+% ============================================================
+\section{The two-move artifact}
+% ============================================================
+
+Sweeping the number of rounds turns the project around. Table~\ref{tab:rounds} reports deterrence as a function of the toehold at one, two, and three rounds, each certified at $\varepsilon$ on the order of $10^{-6}$ to $10^{-5}$ (verified with the tolerance set to $10^{-8}$ and the run ended by budget, far tighter than the default stopping rule).
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{cccc}
+\toprule
+& \multicolumn{3}{c}{Rival deterrence probability} \\
+\cmidrule(lr){2-4}
+Toehold $\theold$ & $R=1$ round & $R=2$ rounds & $R=3$ rounds \\
+\midrule
+$0.15$ & $0.333$ (unique) & $0.333$ (saturated) & $0.220$ or $0.333$ (multiple) \\
+$0.30$ & $0.583$ (unique) & $0.333$ (saturated) & unconverged \\
+\bottomrule
+\end{tabular}
+\caption{The toehold-to-deterrence channel by number of rounds. At one round the equilibrium is unique (at a positive toehold) and deterrence rises with the toehold, exactly as classical two-move intuition predicts. At two rounds deterrence saturates and stops responding to the toehold. By three rounds the equilibria multiply and deterrence spans its whole range, and at the largest toehold no restart converges even at the tightest budget.}
+\label{tab:rounds}
+\end{table}
+
+At \emph{one} round, and a positive toehold, the equilibrium is unique: independent restarts land on identical numbers, and deterrence rises monotonically with the toehold ($0.333$ at $\theold=0.15$, $0.583$ at $\theold=0.30$, with all six restarts identical at $\theold=0.30$). This is the classical prediction, reproduced. At \emph{two} rounds deterrence \emph{saturates}: raising the toehold from $0.15$ to $0.30$ moves deterrence not at all ($0.333$ in both cases), where a two-move contest bought a large jump ($0.333\to0.583$). By \emph{three} rounds the equilibria multiply, deterrence spans $0.000$ to $0.333$ across profiles, and preemption is available even at a zero toehold; at the largest toehold ($\theold=0.30$) no restart converges at all, even at the tightest budget, so deterrence is not identified there by any route.
+
+So the toehold's deterrence channel behaves exactly as auction theory says \emph{in a two-move contest} and \emph{dissolves} in a genuinely multi-round one. The founding qualifier of this project, that a toehold's value compounds across three or more rounds, had the right axis and the wrong sign: the effect does not compound, it evaporates. One caveat must be stated: at a \emph{zero} toehold the two-move game already carries two equilibria, so multiplicity is not created by adding rounds in the abstract, it is created by adding rounds \emph{at a positive toehold}, which is the case of interest.
+
+% ============================================================
+\section{Reconciliation and the toehold puzzle}
+% ============================================================
+
+These findings do not contradict the literature; they sharpen it. \citet{fishman1988} preemptive jump bidding is a \emph{signalling} phenomenon, not a toehold phenomenon, and the mechanism we find is the same winner's-curse inference: the toehold-holder jump-bids, and a rival holding a weak signal infers that competing means paying at least the jump and winning mainly where its own signal is wrong, so it folds. No toehold is required for that, which is exactly why preemption appears at $\theold=0$. What dies is only the narrower, Bulow-Huang-Klemperer-flavored claim that a \emph{toehold} adds a deterrence channel on top of the signalling one. We therefore reproduce Fishman-style signalling preemption computationally and show the toehold does not add to it.
+
+This speaks directly to the toehold puzzle. If a toehold buys profit but no identified deterrence, the observed rarity of toeholds needs no appeal to hidden costs: the theoretical bidding edge that toeholds are supposed to confer is simply not identified in a multi-round contest. The aggressive-toehold equilibrium requires the rival to \emph{read} a jump bid as strength; absent that coordination, the toehold still raises the holder's profit but buys no deterrence.
+
+\paragraph{What may and may not be claimed.} We can say that preemption is \emph{sustainable} in the sequential contest and \emph{absent} in the sealed auction of our companion paper (whose equilibrium bid is flat in the toehold on the identical grid), which qualitatively demonstrates the structural point that paper asserted but could not show; and that the toehold-holder's equilibrium profit rises robustly with the toehold. We do \emph{not} claim that a toehold implies any particular amount of deterrence, or any smooth deterrence-versus-toehold curve. The deterrence prediction is not identified, and drawing that curve from a single family of solves would be precisely the plausible-but-wrong result our methodology is built to avoid.
+
+% ============================================================
+\section{Benchmarking solvers on the sequential game}
+% ============================================================
+
+We next ask which solvers actually solve the sequential game, on commodity CPU with no frontier-model spend. On a three-round instance small enough that exact counterfactual regret minimization and exact exploitability remain a valid reference ($\mathrm{num\_values}=3$, $\mathrm{num\_bids}=6$, about $6{,}655$ states), we run deep self-play for PPO, PPG, and deep policy gradient, alongside NFSP, and compare against CFR, PSRO, and Deep CFR, scoring each by exact exploitability of its tabular tail-average over five seeds (Figure~\ref{fig:seqdeep}).
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{../results/seq_deep_convergence.png}
+\caption{Deep self-play on the three-round takeover auction (mean $\pm$ std over five seeds). PPG converges to a near-exact equilibrium ($0.0007$ exploitability), below the exact-CFR reference at the budget shown; PPO is competitive but seed-sensitive; NFSP does not converge within the shared budget.}
+\label{fig:seqdeep}
+\end{figure}
+
+The ordering is stark. PPG reaches $0.0007\pm0.0002$ exploitability, with all five seeds in agreement, dipping below the exact-CFR reference of $0.0069$ at the budgets shown (we do not read this as PPG beating CFR at equilibrium-finding: CFR run longer would go lower, and it reached its value faster; rather, PPG converges to a genuine near-exact equilibrium and is the strongest deep method by a wide margin). PPO is competitive at $0.031$ but seed-sensitive ($\pm0.030$). Deep policy gradient plateaus near $0.37$. NFSP, a standard imperfect-information baseline, does not converge within the shared $300{,}000$-episode budget, crawling from $1.83$ only to $1.16$; it was already the weakest method on our sealed game, and the sequential structure amplifies the gap. Absolute exploitability is not comparable across the sealed and sequential games; only the within-game ordering is.
+
+\paragraph{Scaling in the number of rounds.} Because the ascending-bid ceiling caps tree depth at the price grid, we widen the grid ($\mathrm{num\_bids}=8$) so that added rounds genuinely deepen the tree, and measure the wall-clock each solver needs to reach an exploitability of $0.05$ as the contest grows from one to four rounds (Figure~\ref{fig:seqscaling}). The tree grows about eighteen-fold over the range. Exact CFR remains faster than PPO at every round count in this tractable range, but its cost climbs with tree depth (from about $5$ to $35$ seconds) while PPO's stays roughly flat (about $100$ to $140$ seconds), so the ratio of CFR to PPO wall-clock narrows from $0.05$ at one round to $0.27$ at four: the gap closes but does not cross. The crossover belongs to the regime where the game can no longer be enumerated at all.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{../results/seq_scaling.png}
+\caption{Scaling in the number of rounds. Left: game-tree size grows steeply with rounds (the flattening at $R=4$ is the price-grid ceiling beginning to bind). Right: exact CFR's wall-clock cost to reach exploitability $0.05$ climbs with depth while PPO's is depth-invariant.}
+\label{fig:seqscaling}
+\end{figure}
+
+% ============================================================
+\section{The intractable regime}
+% ============================================================
+
+Both the number of rounds and the number of private signals enlarge the game, but only the signals do so without bound: information sets grow as $\mathrm{num\_values}^{\,k}$ in the signal count $k$, and history count as $\mathrm{num\_values}^{\,1+2k}$ times the bidding subtree, so a multi-round, multi-signal instance quickly outruns exact enumeration. On an instance with $k=6$ signals per bidder over three rounds (on the order of $10^{7}$ histories, beyond exact CFR and exact exploitability), we train PPO and PPG self-play without tabulating and score them with a learned-best-response exploitability estimate: freeze the policy, train a PPO best-responder against it, and Monte-Carlo the gain from deviating. A learned best response underestimates the true one, so the estimate is a lower bound, which we report as such rather than as a Nash certificate. Against this estimator, uniform-random play is highly exploitable ($1.77$) and a naive no-shading bidder economically so ($0.083$), while PPO and PPG drive the estimate to $0.004$ and $0.003$ respectively, below the naive bidder and down to the estimator's calibrated resolution floor, consistent with near-unexploitable play, in a regime where the exact solvers cannot run.
+
+\begin{figure}[H]
+\centering
+\begin{minipage}[t]{0.48\textwidth}
+\centering
+\includegraphics[width=\textwidth]{../results/seq_intractable.png}
+\captionof{figure}{Intractable multi-round, multi-signal auction ($k=6$ signals, three rounds, about $10^{7}$ histories). PPO ($0.004$) and PPG ($0.003$) drive the learned-best-response exploitability estimate below a naive unshaded bidder ($0.083$) and far below uniform play ($1.77$), in a regime where exact solvers cannot run.}
+\label{fig:seqintr}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.48\textwidth}
+\centering
+\includegraphics[width=\textwidth]{../results/seq_calibration.png}
+\captionof{figure}{Estimator calibration on enumerable multi-signal sequential games ($k=1,2$). The learned-best-response estimate tracks exact exploitability across policies of known exploitability (CFR equilibrium mixed with uniform play), lying close to the $y=x$ line over the whole range.}
+\label{fig:seqcalib}
+\end{minipage}
+\end{figure}
+
+To show the estimate is trustworthy on the sequential multi-signal information-set structure, and not merely reading a weak best response, we calibrate it on enumerable instances ($k=1,2$) where exact exploitability is available as ground truth: we build policies of known exploitability by mixing the CFR equilibrium with uniform play and confirm the learned estimate tracks the exact value (Figure~\ref{fig:seqcalib}). The tracking is tight across the whole range: at $k=2$, for example, the estimate reads $0.257$ against an exact $0.270$ at a $40\%$ uniform mix and $0.765$ against an exact $0.764$ at full uniform, and at the CFR equilibrium both fall to the estimator's resolution floor of a few thousandths. The estimate is therefore a calibrated lower bound on the sequential game, not an artifact of a weak best-responder.
+
+% ============================================================
+\section{Discussion and limitations}
+% ============================================================
+
+The economic headline is a cautionary one for practice and theory alike: the deterrence value of a toehold, the thing that would justify acquiring one, is a feature of models that stop at one or two moves and does not survive a contest with a real third round. This does not say toeholds are worthless, they still raise the holder's profit, but it removes the identified strategic edge that the puzzle literature has struggled to reconcile with their rarity.
+
+Several limitations bound the claims. Our exact equilibrium analysis is on small instances; the value-is-pinned observation is a per-configuration finding, verified where measured and explicitly not a theorem (it fails, for example, at one and two rounds with a zero toehold, where multiple values coexist). The $\varepsilon$-equilibria we exhibit are certified to $\varepsilon$ on the order of $10^{-6}$, small but not exact; in a flat game an $\varepsilon$-equilibrium can sit some distance from an exact one, so we phrase every claim in terms of $\varepsilon$-equilibria that a referee can reproduce. The intractable-regime numbers are learned-best-response \emph{lower bounds}, calibrated but not certificates. Finally, the grid-refinement robustness of the multiplicity finding is established from a coarse to a medium grid; a fully fine grid is left to future compute, as those solves are the slowest in the suite.
+
+% ============================================================
+\section{Conclusion}
+% ============================================================
+
+We solved a multi-round ascending takeover auction with a toehold and found that the toehold's supposed deterrence edge is not what a century of two-move intuition suggests. Equilibria are multiple and give the same profit with different conduct; preemption occurs even without a toehold; and the clean toehold-to-deterrence relationship is an artifact of stopping at two moves, dissolving once a genuine third round is available. Preemptive jump bidding is real and computationally reproducible, but as Fishman-style signalling, not as a toehold effect, which rationalizes the toehold puzzle. Methodologically, forced-opening best responses read the economics without trusting any single solver, and a fictitious-play solve taken at face value manufactures confident artifacts. On the computational side, a generic policy-gradient method solves the sequential game where a standard imperfect-information baseline does not, and the analysis extends into a regime beyond exact enumeration. We release the games, solvers, and experiments so the results can be reproduced and extended.
+
+% ============================================================
+\bibliographystyle{plainnat}
+\bibliography{references}
+% ============================================================
+
+\end{document}

@@ -1,0 +1,7 @@
+instance_histories,9.566e+06
+instance_signal_infosets_per_bidder,7.290e+02
+method,approx_expl_mean,approx_expl_std
+Random,1.773675,0.0
+Naive,0.083150,0.0
+PPO,0.004092,0.003213
+PPG,0.002833,0.004007

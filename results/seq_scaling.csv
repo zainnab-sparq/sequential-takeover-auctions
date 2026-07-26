@@ -1,0 +1,5 @@
+rounds,states,cfr_seconds_to_target,cfr_best_expl,ppo_seconds_to_target,ppo_seconds_std,ppo_seeds_reached,ppo_seeds,ppo_best_expl_mean,ppo_best_expl_std
+1,1498,5.41,0.004124,102.98,0.09,3,3,0.0014,0.0004
+2,10408,30.23,0.005607,137.22,21.82,3,3,0.0014,0.0005
+3,22882,37.74,0.005123,135.85,9.07,3,3,0.0022,0.0008
+4,27337,34.00,0.005122,123.50,0.16,3,3,0.0029,0.0022

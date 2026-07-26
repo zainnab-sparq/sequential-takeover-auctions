@@ -1,0 +1,7 @@
+instance_histories,6.094e+14
+instance_infosets_per_player,1.680e+06
+method,approx_expl_mean,approx_expl_std
+Random,0.998800,0.0
+Naive,0.070500,0.0
+PPO,0.000000,0.000000
+PPG,0.000000,0.000000

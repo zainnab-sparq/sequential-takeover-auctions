@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+
+# OS / editor / tooling
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.claude/
+
+# LaTeX build artifacts (keep .tex/.bib/.pdf, drop the rest)
+*.aux
+*.log
+*.out
+*.bbl
+*.blg
+*.synctex.gz
+*.toc
+*.fdb_latexmk
+*.fls
+
+# Per-game intermediate benchmark CSVs (merged into cross_game.csv)
+results/cross_game_*.csv
+
+# Cached sequential-auction equilibria. Regenerable (just slow); keyed by parameters,
+# restart and iteration budget, so deleting it only costs compute, never correctness.
+results/.solve_cache/
+
+# arXiv submission build artifacts (regenerable from paper/main.tex; see memory)
+paper/arxiv/
+paper/*.tar.gz
+
+
+# Never publish internal notes or copyrighted literature in the public mirror
+memory/
+context/

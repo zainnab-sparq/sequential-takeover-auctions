@@ -1,0 +1,5 @@
+game,states,cfr_seconds_to_target,ppo_seconds_to_target,ppo_seconds_std,ppo_seeds_reached,ppo_seeds,ppo_best_expl_mean,ppo_best_expl_std
+S4,2005,2.03,193.23,19.54,3,3,0.0059,0.0035
+S6,15811,31.89,238.19,47.83,3,3,0.0219,0.0017
+S8,56905,155.66,278.01,64.61,2,3,0.0440,0.0102
+S12,364765,1550.26,,,0,3,0.1281,0.0430

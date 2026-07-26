@@ -1,0 +1,6 @@
+open_spiel==1.6.15
+numpy<2.0
+matplotlib>=3.7
+pytest>=7.4
+dm-tree>=0.1.8
+cvxpy>=1.4  # meta-Nash solver used by PSRO (psro_v2)

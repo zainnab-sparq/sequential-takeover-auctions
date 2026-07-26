@@ -1,0 +1,9 @@
+method,scoring,expl_mean,expl_std
+PPO,full-average (no burn-in),0.022173,0.009619
+PPO,last iterate,0.032810,0.018639
+PPG,full-average (no burn-in),0.011423,0.004411
+PPG,last iterate,0.016081,0.013287
+DeepPG,full-average (no burn-in),0.303714,0.039061
+DeepPG,last iterate,0.303987,0.060031
+NFSP,native average,0.507266,0.006328
+DeepCFR,native average,0.120966,0.004263
