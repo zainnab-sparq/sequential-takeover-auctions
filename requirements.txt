@@ -4,3 +4,10 @@ matplotlib>=3.7
 pytest>=7.4
 dm-tree>=0.1.8
 cvxpy>=1.4  # meta-Nash solver used by PSRO (psro_v2)
+# CPU-only PyTorch. Required by every deep method (PPO, PPG, NFSP, DeepCFR, DeepPG) and
+# therefore by the whole benchmark and intractable-regime leg of paper 2. The Dockerfile
+# installs the same pin from the PyTorch CPU index; listed here so that a bare
+# `pip install -r requirements.txt` outside the container is not silently missing it.
+# For the CPU wheel outside Docker:
+#   pip install torch==2.12.1 --index-url https://download.pytorch.org/whl/cpu
+torch==2.12.1

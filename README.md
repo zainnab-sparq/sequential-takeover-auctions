@@ -84,6 +84,15 @@ docker run --rm -v "$(pwd):/work" -w /work imperfect-info:latest \
 
 This re-solves the paper's two headline tables with the tolerance set far below anything the run can reach and a budget large enough to drive NashConv to roughly 1e-6, so the compute budget rather than the stopping rule ends each solve. **Expect this to take many hours** (it was about 20 on a commodity many-core CPU). Solves are cached under `results/.solve_cache/` keyed by parameters, restart, and iteration budget, so an interrupted run resumes rather than restarting.
 
+You do not need those hours to check the certificate. The certificate is a pure selection over the committed per-restart data, so it rebuilds in about a second, byte-identically:
+
+```bash
+docker run --rm -v "$(pwd):/work" -w /work imperfect-info:latest \
+  python experiments/sequential_general_sum.py certificate_from_selection_csv
+```
+
+**Do not run the script with no arguments if you want to keep the certified numbers.** A bare `python experiments/sequential_general_sum.py` runs the full default suite at the loose budget and overwrites the certificate with rows at the 1e-4 stopping tolerance. See [`REPRODUCING.md`](REPRODUCING.md) for the full map of which command regenerates which artifact, and at what precision.
+
 ### Figure and table map
 
 | Paper artifact | Script | Single-study name |

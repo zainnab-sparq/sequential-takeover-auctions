@@ -440,6 +440,19 @@ def own_profit_fictitious_play(
                 avg[player][index] *= 1.0 - weight
                 avg[player][index] += weight * probs
 
+    # On the break path the last measured NashConv belongs to the average being returned.
+    # On the budget path it does not: the loop measured avg_T and then took one more
+    # averaging step, so the returned profile is avg_{T+1} and was never certified. The
+    # shift is tiny (the update weight is 1/(T+1)), but a certificate should describe the
+    # profile it accompanies, and every certify solve takes the budget path. One extra
+    # best-response pair against a 2e6-iteration run costs nothing.
+    if nashconv_trace[-1][1] >= tolerance:
+        _, br_value0 = own_profit_best_response(tree, 0, avg[1])
+        _, br_value1 = own_profit_best_response(tree, 1, avg[0])
+        value0, value1 = policy_value(tree, avg[0], avg[1])
+        nashconv_trace.append((nashconv_trace[-1][0], (br_value0 - value0)
+                               + (br_value1 - value1)))
+
     final_nashconv = nashconv_trace[-1][1]
     converged = final_nashconv < tolerance
     if not converged:

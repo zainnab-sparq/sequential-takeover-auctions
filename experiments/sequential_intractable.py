@@ -224,7 +224,7 @@ def seq_intractable_experiment():
 
     with open(os.path.join(RESULTS_DIR, "seq_intractable.csv"), "w",
               newline="") as fh:
-        w = csv.writer(fh)
+        w = csv.writer(fh, lineterminator="\n")
         w.writerow(["instance_histories", f"{histories:.3e}"])
         w.writerow(["instance_signal_infosets_per_bidder", f"{infosets:.3e}"])
         w.writerow(["method", "approx_expl_mean", "approx_expl_std"])
@@ -295,7 +295,7 @@ def seq_calibration_study():
 
     with open(os.path.join(RESULTS_DIR, "seq_calibration.csv"), "w",
               newline="") as fh:
-        w = csv.writer(fh)
+        w = csv.writer(fh, lineterminator="\n")
         w.writerow(["num_signals", "mix_fraction", "exact_expl",
                     "approx_mean", "approx_std"])
         for r in all_rows:

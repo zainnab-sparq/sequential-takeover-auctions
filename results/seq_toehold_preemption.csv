@@ -1,4 +1,4 @@
-toehold,restart,opening_bid,p_rival_deterred,p_open_wait,expected_price_given_sale,p_win0,p_win1,p_no_sale,value0,value1,nashconv,converged,iterations
+toehold,restart,opening_bid,p_rival_deterred,p_open_wait,expected_price_given_sale,p_win0,p_win1,p_no_sale,value0,value1,nashconv,reached_tolerance,iterations
 0.0,0,0.000135,0.000035,0.000002,1.656363,0.583292,0.416708,0.000000,0.183974,0.159663,0.00010000,1,41513
 0.0,1,1.124816,0.333255,0.000001,1.749820,0.584465,0.415535,0.000000,0.184214,0.065966,0.00010000,1,51269
 0.0,2,1.124925,0.333275,0.000002,1.749755,0.584915,0.415085,0.000000,0.184308,0.065938,0.00010000,1,47450

@@ -300,18 +300,26 @@ def seq_headline_experiment():
     pg_last = _agg_curves(pg_runs, "last")
     with open(os.path.join(RESULTS_DIR, "seq_deep_convergence.csv"), "w",
               newline="") as fh:
-        w = csv.writer(fh)
-        w.writerow(["method", "episodes", "seconds", "expl_mean", "expl_std"])
+        w = csv.writer(fh, lineterminator="\n")
+        # The instance's size is quoted in the paper, so it belongs in the artifact rather
+        # than only in a console log (the scaling study already records a states column).
+        # A constant column, not a leading metadata row: a metadata row would break every
+        # DictReader on the body below it.
+        states = _count_states(pyspiel.load_game(
+            "dealgame_sequential_takeover", HEADLINE_PARAMS).new_initial_state())
+        w.writerow(["method", "episodes", "seconds", "expl_mean", "expl_std",
+                    "instance_states"])
         for label, agg in [("PPO_tailavg", ppo_avg), ("PPO_last", ppo_last),
                            ("PPG_tailavg", ppg_avg), ("PPG_last", ppg_last),
                            ("DeepPG_RPG_tailavg", pg_avg),
                            ("DeepPG_RPG_last", pg_last), ("NFSP", nfsp_agg)]:
             for a in agg:
                 w.writerow([label, a["episode"], f"{a['seconds']:.2f}",
-                            f"{a['mean']:.6f}", f"{a['std']:.6f}"])
-        w.writerow(["CFR", "", f"{cfr_t:.2f}", f"{cfr_expl:.6f}", "0.0"])
-        w.writerow(["PSRO", "", f"{psro_t:.2f}", f"{psro_m:.6f}", f"{psro_s:.6f}"])
-        w.writerow(["DeepCFR", "", f"{dcfr_t:.2f}", f"{dcfr_m:.6f}", f"{dcfr_s:.6f}"])
+                            f"{a['mean']:.6f}", f"{a['std']:.6f}", states])
+        w.writerow(["CFR", "", f"{cfr_t:.2f}", f"{cfr_expl:.6f}", "0.0", states])
+        w.writerow(["PSRO", "", f"{psro_t:.2f}", f"{psro_m:.6f}", f"{psro_s:.6f}", states])
+        w.writerow(["DeepCFR", "", f"{dcfr_t:.2f}", f"{dcfr_m:.6f}", f"{dcfr_s:.6f}",
+                    states])
     print("  wrote results/seq_deep_convergence.{png,csv}")
 
 
@@ -389,7 +397,7 @@ def seq_scaling_experiment():
     plt.close(fig)
 
     with open(os.path.join(RESULTS_DIR, "seq_scaling.csv"), "w", newline="") as fh:
-        w = csv.writer(fh)
+        w = csv.writer(fh, lineterminator="\n")
         w.writerow(["rounds", "states", "cfr_seconds_to_target", "cfr_best_expl",
                     "ppo_seconds_to_target", "ppo_seconds_std", "ppo_seeds_reached",
                     "ppo_seeds", "ppo_best_expl_mean", "ppo_best_expl_std"])

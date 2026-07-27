@@ -1,4 +1,4 @@
-num_bids,bid_step,toehold,restart,opening_bid,p_rival_deterred,value0,nashconv,converged
+num_bids,bid_step,toehold,restart,opening_bid,p_rival_deterred,value0,nashconv,reached_tolerance
 7,0.500000,0.0,0,1.136547,0.391603,0.210517,0.00148680,0
 7,0.500000,0.0,1,0.999772,0.333269,0.211047,0.00009999,1
 7,0.500000,0.0,2,1.201841,0.414190,0.208401,0.00009963,1
