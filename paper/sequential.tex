@@ -47,13 +47,13 @@
   {\LARGE\bfseries\color{sparqcoral}%
     Does a Toehold Make a Bidder Bolder?\\[0.3em]
     Preemption and Multiplicity in Multi-Round Takeover Auctions\par}
-  \vspace{1em}
+  \vspace{0.6em}
   {\large Zain Naboulsi}\\[0.3em]
   Principal AI Competency Lead, Sparq\\[0.2em]
   \texttt{zain.naboulsi@teamsparq.com}
 \end{center}
 
-\vspace{0.8em}
+\vspace{0.4em}
 
 % ============================================================
 % Abstract box
@@ -63,7 +63,7 @@
   colframe=sparqcoralborder,
   arc=3pt,
   boxrule=1pt,
-  left=10pt, right=10pt, top=10pt, bottom=10pt,
+  left=9pt, right=9pt, top=7pt, bottom=7pt,
   title={\textbf{Abstract}},
   fonttitle=\normalsize,
   coltitle=white,
@@ -73,15 +73,11 @@
 ]
 A bidder can quietly buy a stake in a company before making an offer for it. That stake, a \emph{toehold}, is supposed to pay for itself twice: it makes the bidder willing to bid harder, and it frightens rivals into staying out of the fight. The first effect is arithmetic. The second is what would justify the cost and exposure of taking a toehold at all, and it is why the rarity of toeholds in practice has been a standing puzzle \citep{bettoneckbothorburn2009}.
 
-We ask whether the second effect is there once the contest is modeled as several rounds of escalating bids rather than the single exchange classical models assume. Building on our companion study of sealed auctions \citep{naboulsi2026diligence}, we model a takeover fight in which two bidders take turns, each able to jump to any higher price or walk away, each holding private due-diligence findings about a company worth the same unknown amount to both. We solve it to an accuracy a referee can check, and price an aggressive opening with a calculation that is exact given the rival it is measured against, so it adds no error of its own.
+We ask whether the second effect is there once the contest is modeled as several rounds of escalating bids rather than the single exchange classical models assume. We cast a multi-round ascending common-value takeover auction with toeholds and jump bidding as a two-player extensive-form game of imperfect information, and solve it for own-profit Bayes-Nash equilibria certified as $\varepsilon$-equilibria with $\varepsilon$ between $5\times10^{-7}$ and $8\times10^{-5}$. Three things follow. The auction pins down what the toehold-holder earns but not how it behaves. This \emph{equilibrium multiplicity} is not numerical slack: profiles certified at $\varepsilon\sim10^{-6}$ deter the rival with probability $0.000$ and $0.333$, a gap in conduct five orders of magnitude larger than the $\varepsilon$ that certifies them, and an exact best-response calculation rather than solver output confirms each conduct is a best reply to the other. Preemptive jump bidding persists at a \emph{zero} toehold, recovering Fishman-style signalling inside a solved game and showing the stake buys none of it. And in the instance we solve, the classical link from toehold size to deterrence holds only at one round; a genuine second round flattens it.
 
-Three things follow, and together they take the deterrence argument apart. In the contest we certify, the auction pins down what the toehold-holder earns but not how it behaves: the same contest supports a bidder who opens aggressively against a rival who folds, and one who opens cheaply against a rival who does not, with the same profit either way and nothing in the game to choose between them. Preemptive bidding survives when the toehold is removed entirely, so it is a feature of bidding in public and in turns, not something a stake buys. And the tidy relationship between toehold size and a rival's willingness to quit, the centerpiece of the classical account, holds only in a contest cut short after one round. Give it a genuine second round and the relationship stops responding; by the third it is gone.
+So the two reasons to buy a toehold do not survive equally. The profit reason does; the deterrence reason is not identified, which offers a model-side reason toeholds may be rarer than theory expects, alongside the procedural explanations, disclosure thresholds and price impact, that our model does not represent. One warning generalizes past takeovers: solve this game once and it returns a confident figure for what a preemptive bid is worth, solve it again from a different start and it returns a different one, equally converged, on the same auction. We also benchmark solvers on it, where a generic policy-gradient method reaches near-exact equilibrium and NFSP fails to converge, and we extend past the size exact methods can enumerate. All games, solvers, and experiments are released.
 
-So the two reasons to buy a toehold do not survive equally. The profit reason does, everywhere we look. The deterrence reason does not, which offers a reason from inside the model for why toeholds may be rarer than theory expects, alongside the usual explanations about disclosure and market impact. There is a warning here too for anyone computing economics out of a game solver: run ours once and it returns a confident figure for what a preemptive bid is worth, run it again from a different start and it returns a different one, equally converged, on the same auction. The figure was never a property of the auction.
-
-We also report which solvers can handle contests of this shape. A general-purpose reinforcement-learning method reaches a near-exact solution where the standard baseline from that literature fails to converge at all, while the exact specialist solvers stay faster wherever the game can still be enumerated and only run out when it cannot. All games, solvers, and experiments are released.
-
-\vspace{0.8em}
+\vspace{0.5em}
 \noindent\begin{minipage}[b]{0.82\linewidth}
   \footnotesize\raggedright\mbox{\faGithub\ \url{https://github.com/zainnab-sparq/sequential-takeover-auctions}}
 \end{minipage}%
@@ -179,6 +175,8 @@ $0.15$ & $0.4554$ & $0.4554$ & $0.220$ & $0.333$ \\
 \end{table}
 
 \paragraph{Why, mechanically.} The forced-opening profit curve shows both conducts are self-consistent (Figure~\ref{fig:mechanism}). The cleanest case is the one that carries the second finding. At $\theold=0$ the six certified restarts split in two: four deter the rival with probability $0.333$, and two essentially never do ($7\times10^{-7}$). Against the four, committing to the jump at $1.125$ rather than opening at the bottom of the grid raises the toehold-holder's profit by $179$ to $194\%$; against the two it raises it by exactly nothing, and the curve peaks at the cheapest opening. So ``I preempt because you fold, you fold because I preempt'' and ``I open low because you will not fold, you will not fold because I open low'' are both equilibria. This is coordination-style multiplicity, not solver failure.
+
+\paragraph{Is it just $\varepsilon$ slack?} The obvious objection to any computational multiplicity claim is that two profiles certified only to $\varepsilon$ need not be two equilibria. Where payoffs are nearly indifferent, or at information sets the profile rarely reaches, strategies are close to unconstrained, and a difference that looks behavioural could be numerical room. Two things answer it here. First, the scale is wrong for slack: at $\theold=0$ the two conducts deter with probability $0.000$ and $0.333$ while both are certified at $\varepsilon\approx2.4\times10^{-6}$, so the gap in behaviour is about $10^{5}$ times the gain either bidder could get by deviating. Second, and more decisively, the forced-opening curve settles it without the solver. It is an exact calculation, validated against brute-force enumeration over every pure opening policy, and it shows each conduct is an exact best reply to its counterpart rather than a near-tie: against the deterring rivals, committing to the jump earns $179$ to $194\%$ more than opening at the bottom of the grid, and against the passive ones it earns nothing at all and the curve peaks at the cheapest opening. A profile cannot be slack in a direction that costs a bidder nothing and gains it nothing. What we do not claim is an enumeration of the equilibrium set: we exhibit two conducts that are each supported as best replies, not a proof that these are the only ones.
 
 There is a sharper version of this, and it is worth stating separately. Not only is the deterrence rate unpinned, so is the amount of money a jump bid is worth. Non-identification bites harder here than the phrase suggests: several answers are equally consistent with everything the model says, so quoting one of them is a choice rather than a finding. The deterrence rate is a single number standing in for a whole strategy, one that specifies what the rival would do in many situations, most of which never arise in the solution being summarized. The forced-opening curve puts a price on exactly those unvisited situations. That is why two solutions can report the same deterrence rate and still disagree about what preemption earns, and they do: at $\theold=0.15$ four certified profiles deter the rival with probability $0.3333$ to four decimals and yield premia of $31\%$, $31\%$, $5\%$ and $5\%$, and at $\theold=0.20$ four profiles that all deter at $0.3333$ yield premia from $24\%$ to $58\%$. Reporting a single premium per toehold would therefore be reporting a choice of representative profile rather than a property of the game. We report the interval spanned by the certified rivals instead: $0$ or $179$ to $194\%$ at $\theold=0$, $2$ to $77\%$ at $\theold=0.05$, $3$ to $52\%$ at $\theold=0.10$, $5$ to $31\%$ at $\theold=0.15$, and $24$ to $58\%$ at $\theold=0.20$. These are lower bounds on the true spread, since they span the equilibria that six restarts happen to find rather than the equilibrium set.
 
