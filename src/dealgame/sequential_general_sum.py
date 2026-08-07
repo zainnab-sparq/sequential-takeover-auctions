@@ -38,9 +38,100 @@ also checks the best response against a brute-force search over every pure polic
 
 from __future__ import annotations
 
+import os
+import pickle
+import tempfile
 import warnings
 
 import numpy as np
+
+# A checkpoint records the whole iterate, so the format has to change with it. A stale
+# file from an older layout is discarded rather than half-read.
+_CHECKPOINT_FORMAT = 1
+
+
+def _write_checkpoint(path: str, state: dict) -> None:
+    """Persist a solve's iterate, atomically.
+
+    The point of a checkpoint is to survive an abrupt stop, so it must never be the
+    thing that was half-written when the power went. Writing to a sibling and renaming
+    means a reader sees either the previous checkpoint or the new one, never a torn mix.
+
+    The sibling has to be private to this writer. Two study containers share one cache
+    directory and can be solving the same cell, so a shared temp name puts both of them
+    on the same file: the first rename carries away the file the second still holds open,
+    and the second's rename raises FileNotFoundError out of the worker and takes the whole
+    study down with it. That cost a 23.6-hour certification run on 2026-07-29. mkstemp
+    rather than the pid, because uniqueness by construction does not need an argument
+    about which writers can collide.
+
+    Failing to write one is not fatal, and making it fatal was the more expensive bug of
+    the two. A checkpoint only buys resume granularity, so losing one costs at most
+    ``checkpoint_every`` iterations, while raising out of a pool worker kills the entire
+    study: it did so on 2026-07-29 (FileNotFoundError) and again on 2026-08-02
+    (PermissionError, four days into a 54-cell run, destroying eighteen finished solves).
+    Care inside this process cannot make the write safe anyway, since the repository lives
+    in a syncing folder and a rename can fail for reasons outside it. So the failure is
+    reported and the solve continues.
+    """
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".",
+                                   prefix=f"{os.path.basename(path)}.", suffix=".tmp")
+        with os.fdopen(fd, "wb") as handle:
+            pickle.dump(state, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, path)
+    except OSError as exc:
+        warnings.warn(f"could not write checkpoint {path} ({exc}); the solve continues "
+                      "without it and will restart this cell rather than resume it",
+                      RuntimeWarning, stacklevel=2)
+        if tmp is not None:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+def _decimate_trace(trace: list, keep_iteration: int,
+                    limit: int = 4000) -> list[tuple[int, float]]:
+    """Thin a NashConv trace for storage, keeping the points that carry meaning.
+
+    A 2e6-iteration trace is tens of megabytes, which is too much to rewrite every
+    checkpoint. Nothing downstream consumes the trace at full resolution, but the
+    minimum has to survive: ``best_nashconv`` is the certificate, and a reader who
+    recomputes ``min(trace)`` must get the same number rather than a decimated near-miss.
+    The final point is kept for the same reason, since it is the reported endpoint.
+    """
+    if len(trace) <= limit:
+        return list(trace)
+    stride = len(trace) // limit + 1
+    kept = {entry[0]: entry for entry in trace[::stride]}
+    for entry in trace:
+        if entry[0] == keep_iteration:
+            kept[entry[0]] = entry
+    kept[trace[-1][0]] = trace[-1]
+    return [kept[key] for key in sorted(kept)]
+
+
+def _read_checkpoint(path: str, signature: tuple) -> dict | None:
+    """Load a checkpoint, or None if there is nothing trustworthy to resume from.
+
+    ``signature`` pins the checkpoint to the solve that wrote it. Resuming one solve
+    from another's iterate would produce a confident, wrong equilibrium, so anything
+    that does not match exactly is treated as absent.
+    """
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, "rb") as handle:
+            state = pickle.load(handle)
+    except (OSError, pickle.UnpicklingError, EOFError, AttributeError):
+        return None
+    if (not isinstance(state, dict)
+            or state.get("format") != _CHECKPOINT_FORMAT
+            or state.get("signature") != signature):
+        return None
+    return state
 
 FP_TOLERANCE = 1e-4
 # NashConv falls off as ~1.4/t (measured, clean, no cycling), so reaching 1e-4 takes
@@ -404,6 +495,8 @@ def own_profit_fictitious_play(
     tolerance: float = FP_TOLERANCE,
     initial_policies: list[Policy] | None = None,
     callback=None,
+    checkpoint_path: str | None = None,
+    checkpoint_every: int = 10_000,
 ) -> dict:
     """Solve the sequential auction's own-profit equilibrium by fictitious play.
 
@@ -416,6 +509,13 @@ def own_profit_fictitious_play(
     exists so a caller can watch an *economic* statistic settle: NashConv falling is
     necessary but not sufficient, and the quantity a paper reports may stabilize long
     before the equilibrium itself does (or, worse, may still be drifting once it does).
+
+    ``policy0``/``policy1``/``nashconv`` describe the **final** iterate, and
+    ``best_policy0``/``best_policy1``/``best_nashconv``/``best_iteration`` describe the
+    tightest one the run visited. Certify from the latter: this is a general-sum game,
+    where fictitious play can orbit rather than settle, so the final iterate is only the
+    best one on runs that genuinely converged. ``nashconv / best_nashconv`` is the
+    diagnostic that tells the two cases apart.
     """
     if initial_policies is None:
         avg = [tree.uniform_policy(0), tree.uniform_policy(1)]
@@ -423,13 +523,50 @@ def own_profit_fictitious_play(
         avg = [[probs.copy() for probs in initial_policies[0]],
                [probs.copy() for probs in initial_policies[1]]]
     nashconv_trace: list[tuple[int, float]] = []
+    # Fictitious play's convergence theorem is a zero-sum result. This is a general-sum
+    # game, so nothing stops the averaged profile from orbiting instead of settling, and
+    # measurement says it does: the 7-level theta=0.30 cell reaches NashConv 5.1e-04 by
+    # 100k iterations and is back up at 1.8e-02 by 2e6. Returning only the last iterate
+    # therefore certifies wherever the budget happened to stop, and spending more compute
+    # can make the certificate worse. Keeping the tightest profile visited costs one copy
+    # per improvement and is not a fudge: a profile whose measured NashConv is eps *is* an
+    # eps-equilibrium, whenever it was reached. The gap between the two is also the only
+    # signal that separates a cell that converged from one that cycled.
+    best_nashconv = float("inf")
+    best_iteration = 0
+    best_policies: list[Policy] = [[probs.copy() for probs in avg[0]],
+                                   [probs.copy() for probs in avg[1]]]
 
-    for iteration in range(1, max_iterations + 1):
+    # A 13-level certify cell is ~100 hours. Without a checkpoint an abrupt stop at hour
+    # 90 costs all 90, so the solve records its iterate periodically and picks up where
+    # it left off. The averaging weight is 1/(t+1), which makes the iteration counter
+    # part of the state rather than bookkeeping: resuming with a reset counter would
+    # reweight every remaining step and quietly return a different equilibrium.
+    signature = (tree.num_infosets(0), tree.num_infosets(1), tolerance,
+                 tuple(round(float(p), 12) for p in avg[0][0]) if avg[0] else ())
+    start_iteration = 0
+    resumed = _read_checkpoint(checkpoint_path, signature)
+    if resumed is not None and resumed["iteration"] < max_iterations:
+        start_iteration = resumed["iteration"]
+        avg = [[probs.copy() for probs in resumed["avg"][0]],
+               [probs.copy() for probs in resumed["avg"][1]]]
+        best_policies = [[probs.copy() for probs in resumed["best"][0]],
+                         [probs.copy() for probs in resumed["best"][1]]]
+        best_nashconv = resumed["best_nashconv"]
+        best_iteration = resumed["best_iteration"]
+        nashconv_trace = list(resumed["nashconv_trace"])
+
+    for iteration in range(start_iteration + 1, max_iterations + 1):
         br0, br_value0 = own_profit_best_response(tree, 0, avg[1])
         br1, br_value1 = own_profit_best_response(tree, 1, avg[0])
         value0, value1 = policy_value(tree, avg[0], avg[1])
         nashconv = (br_value0 - value0) + (br_value1 - value1)
         nashconv_trace.append((iteration, nashconv))
+        if nashconv < best_nashconv:
+            best_nashconv = nashconv
+            best_iteration = iteration
+            best_policies = [[probs.copy() for probs in avg[0]],
+                             [probs.copy() for probs in avg[1]]]
         if callback is not None:
             callback(iteration, avg[0], avg[1], nashconv)
         if nashconv < tolerance:
@@ -439,6 +576,20 @@ def own_profit_fictitious_play(
             for index, probs in enumerate(best_response):
                 avg[player][index] *= 1.0 - weight
                 avg[player][index] += weight * probs
+
+        # Written after the averaging step so the stored iterate is exactly what the next
+        # iteration would start from, which is what makes the resume seamless.
+        if checkpoint_path and iteration % checkpoint_every == 0:
+            _write_checkpoint(checkpoint_path, {
+                "format": _CHECKPOINT_FORMAT,
+                "signature": signature,
+                "iteration": iteration,
+                "avg": avg,
+                "best": best_policies,
+                "best_nashconv": best_nashconv,
+                "best_iteration": best_iteration,
+                "nashconv_trace": _decimate_trace(nashconv_trace, best_iteration),
+            })
 
     # On the break path the last measured NashConv belongs to the average being returned.
     # On the budget path it does not: the loop measured avg_T and then took one more
@@ -452,6 +603,11 @@ def own_profit_fictitious_play(
         value0, value1 = policy_value(tree, avg[0], avg[1])
         nashconv_trace.append((nashconv_trace[-1][0], (br_value0 - value0)
                                + (br_value1 - value1)))
+        if nashconv_trace[-1][1] < best_nashconv:
+            best_nashconv = nashconv_trace[-1][1]
+            best_iteration = nashconv_trace[-1][0]
+            best_policies = [[probs.copy() for probs in avg[0]],
+                             [probs.copy() for probs in avg[1]]]
 
     final_nashconv = nashconv_trace[-1][1]
     converged = final_nashconv < tolerance
@@ -464,7 +620,7 @@ def own_profit_fictitious_play(
             stacklevel=2,
         )
     value0, value1 = policy_value(tree, avg[0], avg[1])
-    return {
+    result = {
         "policy0": avg[0],
         "policy1": avg[1],
         "value0": value0,
@@ -473,7 +629,19 @@ def own_profit_fictitious_play(
         "converged": converged,
         "iterations": nashconv_trace[-1][0],
         "nashconv_trace": nashconv_trace,
+        "best_policy0": best_policies[0],
+        "best_policy1": best_policies[1],
+        "best_nashconv": best_nashconv,
+        "best_iteration": best_iteration,
     }
+    # The solve is done and its result is about to be cached, so the checkpoint is now
+    # only a way to resume something that finished. Clearing it keeps the disk honest.
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        try:
+            os.remove(checkpoint_path)
+        except OSError:
+            pass
+    return result
 
 
 def equilibrium_statistics(tree: SequentialAuctionTree, policy0: Policy,

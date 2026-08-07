@@ -25,7 +25,14 @@ import subprocess
 import sys
 import time
 
-DEFAULT_CONTAINER = "seq_certify_grid"
+DEFAULT_CONTAINER = "seq_certify_grid_v2"
+# The refinement grid the certify run is solving, and the budget it solves them at.
+_GRID_LEVELS = (7, 9, 13)
+_GRID_TOEHOLDS = (0.0, 0.15, 0.30)
+_GRID_ITERATIONS = 2_000_000
+_GRID_ROUNDS = 3
+# A solve counts toward the paper's figure only if its certified NashConv clears this.
+_ACCEPT_EPS = 1e-4
 CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                          "results", ".solve_cache")
 # Below this, the container is not doing arithmetic and something is genuinely wrong.
@@ -87,6 +94,66 @@ def _hours_since(ts: float | None) -> str:
     return f"{(time.time() - ts) / 3600:.1f}h ago"
 
 
+def _grid_progress() -> list[str]:
+    """Per-cell status of the refinement grid, read out of the solve cache.
+
+    The study prints nothing until all 54 solves return, so on a multi-day run the log
+    cannot say how far along it is or whether the cells landing are any good. Each solve
+    is cached the moment it completes, though, so the cache is a live progress record.
+    Reading it needs no cooperation from the running container and cannot disturb it.
+    """
+    if not os.path.isdir(CACHE_DIR):
+        return []
+    import pickle
+    import warnings
+
+    cells: dict[tuple, list] = {}
+    for entry in os.scandir(CACHE_DIR):
+        # Only completed solves. The directory also holds ``.ckpt`` files, which are live
+        # mid-solve iterates carrying a policy snapshot and a NashConv trace; at 13 levels
+        # those run to tens of megabytes each and reading them would make a status check
+        # slower than the thing it is reporting on.
+        if not entry.is_file() or not entry.name.endswith(".pkl"):
+            continue
+        try:
+            with warnings.catch_warnings():    # host numpy may differ from the container's
+                warnings.simplefilter("ignore")
+                with open(entry.path, "rb") as handle:
+                    stat = pickle.load(handle)
+        except Exception:                      # a half-written pickle is just not ready
+            continue
+        params = stat.get("params") or {}
+        # "wander" marks a schema-v2 entry, which certifies the best iterate. The v1
+        # entries certified the final one and are still on disk under their old keys;
+        # counting them would report a previous run's progress as this one's.
+        if ("wander" not in stat
+                or stat.get("iterations") != _GRID_ITERATIONS
+                or params.get("num_rounds") != _GRID_ROUNDS
+                or params.get("num_bids") not in _GRID_LEVELS
+                or params.get("toehold") not in _GRID_TOEHOLDS):
+            continue
+        cells.setdefault((params["num_bids"], params["toehold"]), []).append(stat)
+
+    done = sum(len(v) for v in cells.values())
+    lines = [f"  grid progress  {done}/54 solves cached"]
+    if not done:
+        return lines + ["                 (nothing has completed yet)"]
+    lines.append(f"  {'levels':>6} {'theta':>6} {'have':>5} {'certified eps':>22} "
+                 f"{'accepted':>9} {'max wander':>11}")
+    for levels in _GRID_LEVELS:
+        for theta in _GRID_TOEHOLDS:
+            got = cells.get((levels, theta), [])
+            if not got:
+                continue
+            eps = [s["nashconv"] for s in got]
+            wander = [s.get("wander", 1.0) for s in got]
+            ok = sum(1 for e in eps if e <= _ACCEPT_EPS)
+            lines.append(f"  {levels:>6} {theta:>6.2f} {len(got):>4}/6 "
+                         f"{min(eps):>10.2e} ..{max(eps):>9.2e} "
+                         f"{ok:>6}/{len(got)} {max(wander):>11.1f}")
+    return lines
+
+
 def _results(name: str) -> list[str]:
     code, out = _docker("logs", "--tail", "200", name)
     if code != 0:
@@ -123,6 +190,8 @@ def main() -> int:
     print(f"  cpu           {cpu if cpu is None else f'{cpu:.0f}%'}"
           f"   (healthy is hundreds or thousands; the pool fans out)")
     print(f"  solve cache   {cached} files, last write {_hours_since(newest)}")
+    for line in _grid_progress():
+        print(line)
 
     if cpu is None:
         print("  VERDICT       cannot read CPU; check `docker stats` by hand")

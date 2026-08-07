@@ -18,6 +18,7 @@ import os
 import pytest
 
 from experiments.sequential_general_sum import (DETERRENCE_TIE, _build_certificate,
+                                                _representative_rivals,
                                                 certificate_from_selection_csv)
 
 ACCEPT = 1e-4
@@ -104,3 +105,145 @@ def test_committed_certificate_matches_the_committed_per_restart_rows(tmp_path):
 
     assert rebuilt == committed
     assert b"\r\n" not in open(scratch, "rb").read(), "artifacts are eol=lf per .gitattributes"
+
+
+def test_every_advertised_entry_point_actually_resolves():
+    """The CLI's own help must not list a command that fails.
+
+    ``certify_grid`` was defined but dropped from ``ENTRY_POINTS`` by a merge, so the
+    documented command exited 2 with "unknown entry point" while the function sat right
+    below the registry. Nothing caught it because the failure only shows up when someone
+    runs a multi-day study. Both directions are checked: every advertised name resolves
+    to something callable, and every study function is advertised.
+    """
+    from experiments import sequential_general_sum as module
+
+    for name in module.ENTRY_POINTS:
+        target = getattr(module, name, None)
+        assert callable(target), f"{name} is advertised but not callable"
+
+    studies = [name for name, value in vars(module).items()
+               if callable(value) and not name.startswith("_")
+               and getattr(value, "__module__", None) == module.__name__
+               and (name.endswith("_experiment") or name.startswith("certif")
+                    or name == "main")]
+    unregistered = [name for name in studies if name not in module.ENTRY_POINTS]
+    assert not unregistered, f"study functions missing from ENTRY_POINTS: {unregistered}"
+
+
+def test_representative_rivals_prefer_the_tightest_solve_among_deterrence_ties():
+    """The two representative profiles must be picked the same way everywhere.
+
+    Numerical noise puts several restarts within ~1e-5 of each other in deterrence, so a
+    plain argmax lets noise choose, and it reliably chooses badly: the restart that
+    overshoots the true value by noise is the one that has not settled, so it also carries
+    the loosest NashConv. Observed at toehold 0.15, where argmax preferred a profile at
+    deterrence 0.333344 with eps 3.0e-05 over three profiles at 0.33333 with eps ~3.3e-06.
+    """
+    good = [
+        {"restart": 0, "p_rival_deterred": 0.333331, "nashconv": 3.32e-06, "value0": 0.4554},
+        {"restart": 1, "p_rival_deterred": 0.333329, "nashconv": 3.28e-06, "value0": 0.4554},
+        {"restart": 3, "p_rival_deterred": 0.220576, "nashconv": 3.51e-06, "value0": 0.4554},
+        {"restart": 4, "p_rival_deterred": 0.333344, "nashconv": 2.96e-05, "value0": 0.4557},
+    ]
+
+    deterring, passive = _representative_rivals(good)
+
+    assert deterring["restart"] == 1, (
+        "argmax deterrence picked the noisiest profile instead of the tightest one "
+        "within the tie band")
+    assert passive["restart"] == 3
+
+
+def _incentive_rows():
+    incentive = os.path.join(RESULTS, "seq_preemption_incentive.csv")
+    if not os.path.exists(incentive):
+        pytest.skip("released CSVs not present")
+    with open(incentive) as fh:
+        return list(csv.DictReader(fh))
+
+
+def test_the_figure_measures_every_certified_rival_not_a_chosen_pair():
+    """Figure 1 must report all accepted restarts, because the premium is not identified.
+
+    It used to select one most-deterring and one least-deterring profile per toehold. That
+    is a statement about the selection rule rather than about the game: profiles certified
+    at the same eps, deterring with the same probability to five decimals, give premia that
+    differ by up to eighteen-fold (2.7% and 49.0% at toehold 0.10). Deterrence is one
+    scalar summary of a strategy defined over many information sets, and the forced-opening
+    curve probes exactly the off-path behaviour that scalar discards. So every certified
+    rival goes in the released data and the paper quotes the interval.
+    """
+    selection = os.path.join(RESULTS, "seq_equilibrium_selection.csv")
+    if not os.path.exists(selection):
+        pytest.skip("released CSVs not present")
+
+    accepted = {}
+    with open(selection) as fh:
+        for r in csv.DictReader(fh):
+            if float(r["nashconv"]) <= ACCEPT:
+                accepted.setdefault(float(r["toehold"]), set()).add(int(r["restart"]))
+
+    measured = {}
+    for row in _incentive_rows():
+        if row["rival"] == "uniform-rival":
+            continue
+        measured.setdefault(float(row["toehold"]), set()).add(int(row["restart"]))
+
+    checked = 0
+    for theta, restarts in accepted.items():
+        if theta not in measured:
+            continue
+        assert measured[theta] == restarts, (
+            f"toehold {theta}: the figure measured restarts {sorted(measured[theta])} "
+            f"but {sorted(restarts)} were certified")
+        checked += 1
+    assert checked, "no overlapping toeholds were actually compared"
+
+
+def test_the_unbluffable_control_earns_no_premium_at_any_toehold():
+    """The control is the claim's own falsifier, so it must hold everywhere.
+
+    A jump bid buys deterrence. Against a rival bidding at random, which cannot be
+    deterred, it must buy nothing: the curve slopes down and the best opening is the
+    cheapest one. If this ever showed a premium, the premium would not be deterrence.
+    """
+    control = [r for r in _incentive_rows() if r["rival"] == "uniform-rival"]
+    assert control, "the control rival is missing from the released data"
+    for row in control:
+        assert float(row["peak_bid"]) == 0.0, (
+            f"toehold {row['toehold']}: the control peaked at a jump of "
+            f"{row['peak_bid']}, so the premium is not deterrence")
+        assert float(row["preemption_premium"]) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_extra_restarts_really_are_new_draws():
+    """Deepening a cell only tests anything if the added starts differ from the first six.
+
+    ``_restart_policies`` keys its generator on ``RESTART_SEED + restart``, so this holds
+    by construction; it is pinned because the failure is silent. Reusing the seeds would
+    recompute the same six equilibria under twelve different cache keys, burn four days,
+    and return "no new basin found", which reads exactly like a real negative result.
+    """
+    import numpy as np
+    import pyspiel
+
+    import dealgame  # noqa: F401  (registers the game)
+    from dealgame.sequential_general_sum import SequentialAuctionTree
+    from experiments.sequential_general_sum import (BASE, DEEP_EXTRA_RESTARTS,
+                                                    NUM_RESTARTS, _restart_policies)
+
+    tree = SequentialAuctionTree(pyspiel.load_game(
+        "dealgame_sequential_takeover", dict(BASE, num_values=2, num_bids=3,
+                                             num_rounds=2)))
+    draws = {}
+    for restart in range(NUM_RESTARTS + DEEP_EXTRA_RESTARTS):
+        policies = _restart_policies(tree, restart)
+        if policies is None:            # restart 0 is the uniform start
+            continue
+        key = tuple(np.round(np.concatenate([p.ravel() for p in policies[0]]), 12))
+        assert key not in draws, (
+            f"restart {restart} repeats restart {draws[key]}; the added starts are not "
+            "new draws and the deepened cell would re-solve the same basins")
+        draws[key] = restart
+    assert len(draws) == NUM_RESTARTS + DEEP_EXTRA_RESTARTS - 1

@@ -57,7 +57,16 @@ Each row carries its own `accepted`, `tolerance` and `iterations` so it is self-
 | `rounds_compounding_experiment` | `seq_rounds_compounding.{csv,png}` | Table 2 | ~10 h |
 | `equilibrium_selection_experiment` | `seq_equilibrium_selection.{csv,png}`, `seq_multiplicity_certificate.csv` | Table 1 | ~6 h |
 | `bid_grid_refinement_experiment` | `seq_grid_refinement.{csv,png}` | §9 limitations | ~40 h |
+| `certify_grid` | `seq_grid_refinement.{csv,png}` at probe precision | §6 grid refinement | ~7 days |
+| `certify_deep` | `seq_grid_deep_restarts.csv` | §9 limitations | ~4 days |
 | `main` | everything above at the default budget | nothing in the paper | ~30 h |
+
+`certify_grid` and `certify_deep` are the two that will not finish overnight. Both solve
+13-level trees, which cost ~100 h per solve on one core, and both run their cells
+concurrently across a process pool, so wall-clock is roughly one solve rather than the
+sum. Both checkpoint into `results/.solve_cache/` and resume where they stopped, so an
+interrupted run is not a lost one. `certify_deep` runs eighteen restarts of the single
+cell at 13 levels and toehold 0.15, which `certify_grid` leaves uncertified at six.
 
 `python experiments/sequential_benchmark.py <entry-point>`
 
@@ -91,6 +100,22 @@ of the restarts already in that file and copies their numbers, so rebuilding it 
 committed per-restart rows is exact, and produces byte-identical output to `certify`.
 Figure 1 is a plot of `seq_preemption_curves.csv`, likewise.
 
+## Checking a certificate instead of trusting it
+
+Every ε in this repo is the solver grading its own work. To re-derive one from the game
+tree instead:
+
+```bash
+python scripts/verify_certified_profile.py
+```
+
+It takes the one certified profile of `seq_grid_deep_restarts.csv`, rebuilds bidder 0's
+exact best response against the stored rival, and reports both the exploitability it
+measures and whether the published deterrence and opening bid reproduce. It needs the
+solve cache, so run it after `certify_deep` rather than on a fresh clone. One limit it
+states rather than hides: the cache stores the rival's policy but not bidder 0's, so only
+bidder 0's half of NashConv is independently checkable this way.
+
 ## Instances
 
 The economics game (Tables 1 and 2, Figure 1) is **not** the benchmark game. Parameters:
@@ -107,11 +132,17 @@ The economics game (Tables 1 and 2, Figure 1) is **not** the benchmark game. Par
 
 ## Known gaps
 
-- **Grid refinement is underpowered.** `seq_grid_refinement.csv` reaches the acceptance
-  tolerance for 6/6 restarts only at 9 levels; at 7 levels 5/18 solves are accepted and
-  at 13 levels 1/18. So the multiplicity is exhibited at the base grid and grid
-  robustness is neither established nor refuted at the others. The 13-level cells are
-  ~12–20 h each. The headline does not rest on this study.
+- **Grid refinement is underpowered.** Acceptance in `seq_grid_refinement.csv` is 6/18
+  solves at 7 levels, 11/18 at 9, and 2/18 at 13, so it is not monotone in resolution and
+  the coarsest grid is not the easiest to solve. The multiplicity is exhibited at the base
+  grid and at 13 levels only at a zero toehold. The headline does not rest on this study.
+- **The fine grid at a positive toehold certifies one conduct, not two.**
+  `seq_grid_deep_restarts.csv` re-runs the 13-level, toehold-0.15 cell with eighteen
+  restarts instead of six. One clears the bound, at ε 3.78e-05 and deterrence 0.333. Four
+  of the twelve added restarts do settle on low-deterrence conduct, but the tightest of
+  those is 27× from the bound and three are still improving when the budget ends, so the
+  low branch is reached at this resolution and not certified. Read that as "not resolved
+  at this budget", not as "absent".
 - **Figure 1's rival policies are default-budget solves in the committed data.** Every
   row of the committed `seq_preemption_incentive.csv` has `nashconv` ≈ 1e-4, i.e. those
   rivals stopped at the stopping rule. `certify` now re-runs this study at probe

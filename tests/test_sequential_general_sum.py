@@ -193,6 +193,110 @@ def test_fictitious_play_from_a_random_start_finds_the_same_value():
     assert from_random["value1"] == pytest.approx(from_uniform["value1"], abs=1e-2)
 
 
+def _measured_nashconv(tree, policy0, policy1):
+    """NashConv of a profile, recomputed from scratch rather than trusted."""
+    _, br_value0 = own_profit_best_response(tree, 0, policy1)
+    _, br_value1 = own_profit_best_response(tree, 1, policy0)
+    value0, value1 = policy_value(tree, policy0, policy1)
+    return (br_value0 - value0) + (br_value1 - value1)
+
+
+def test_best_iterate_is_the_tightest_profile_the_run_visited():
+    """Own-profit fictitious play can wander, so the last iterate is not the best one.
+
+    FP's convergence guarantee is a zero-sum result. Maximizing each bidder's own profit
+    in a general-sum game leaves the averaged profile free to orbit, and a measured run
+    of the 7-level theta=0.30 cell reaches NashConv 5.1e-04 at 100k iterations and is
+    back up at 1.8e-02 by 2e6. Reporting the final iterate therefore certifies wherever
+    the budget happened to stop. The solver keeps the tightest profile it visited so a
+    caller can certify that one instead.
+    """
+    game = pyspiel.load_game(GAME_NAME, dict(SMALL, toehold=0.3))
+    tree = SequentialAuctionTree(game)
+    result = own_profit_fictitious_play(tree, max_iterations=400, tolerance=0.0)
+
+    trace_min = min(nashconv for _, nashconv in result["nashconv_trace"])
+    assert result["best_nashconv"] == pytest.approx(trace_min, rel=1e-12)
+    assert result["best_nashconv"] <= result["nashconv"] + 1e-15
+    assert 1 <= result["best_iteration"] <= result["iterations"]
+
+
+def test_best_iterate_really_is_an_epsilon_equilibrium_at_its_reported_epsilon():
+    """The certificate has to describe the profile it is attached to.
+
+    A snapshot bug (keeping the value but not the profile, or aliasing the array that
+    later averaging mutates) would leave ``best_nashconv`` a number nothing achieves.
+    Re-measuring the returned profile from scratch is what makes the certificate real.
+    """
+    game = pyspiel.load_game(GAME_NAME, dict(SMALL, toehold=0.3))
+    tree = SequentialAuctionTree(game)
+    result = own_profit_fictitious_play(tree, max_iterations=400, tolerance=0.0)
+
+    remeasured = _measured_nashconv(tree, result["best_policy0"], result["best_policy1"])
+    assert remeasured == pytest.approx(result["best_nashconv"], abs=1e-12)
+
+    for player, policy in ((0, result["best_policy0"]), (1, result["best_policy1"])):
+        for index, probs in enumerate(policy):
+            assert len(probs) == len(tree.infoset_actions(player, index))
+            assert probs.sum() == pytest.approx(1.0, abs=1e-12)
+            assert (probs >= -1e-15).all()
+
+
+def test_best_iterate_is_not_an_alias_of_the_returned_final_iterate():
+    """Later averaging must not reach back and mutate the snapshot in place."""
+    game = pyspiel.load_game(GAME_NAME, dict(SMALL, toehold=0.3))
+    tree = SequentialAuctionTree(game)
+    result = own_profit_fictitious_play(tree, max_iterations=400, tolerance=0.0)
+
+    if result["best_iteration"] < result["iterations"]:
+        differs = any(not np.array_equal(best, final) for best, final
+                      in zip(result["best_policy0"], result["policy0"]))
+        assert differs, "the snapshot is aliasing the running average"
+
+
+def test_a_resumed_solve_matches_one_that_ran_straight_through(tmp_path):
+    """Checkpointing is only worth having if resuming is exact.
+
+    The certify grid's 13-level cells are ~100h each, so a reboot part-way through
+    used to cost the whole solve. Resume has to reproduce the uninterrupted run
+    bit-for-bit: fictitious play's averaging weight is 1/(t+1), so a resumed run that
+    restarted its iteration counter would silently reweight every remaining step and
+    return a different equilibrium while looking perfectly healthy.
+    """
+    game = pyspiel.load_game(GAME_NAME, dict(SMALL, toehold=0.3))
+    tree = SequentialAuctionTree(game)
+
+    straight = own_profit_fictitious_play(tree, max_iterations=300, tolerance=0.0)
+
+    checkpoint = str(tmp_path / "solve.ckpt")
+    own_profit_fictitious_play(tree, max_iterations=120, tolerance=0.0,
+                               checkpoint_path=checkpoint, checkpoint_every=40)
+    resumed = own_profit_fictitious_play(tree, max_iterations=300, tolerance=0.0,
+                                         checkpoint_path=checkpoint, checkpoint_every=40)
+
+    assert resumed["iterations"] == straight["iterations"]
+    assert resumed["nashconv"] == pytest.approx(straight["nashconv"], rel=1e-12)
+    assert resumed["best_nashconv"] == pytest.approx(straight["best_nashconv"], rel=1e-12)
+    assert resumed["best_iteration"] == straight["best_iteration"]
+    for player in ("policy0", "policy1", "best_policy0", "best_policy1"):
+        for got, want in zip(resumed[player], straight[player]):
+            assert np.allclose(got, want, atol=1e-12), f"{player} diverged after resume"
+
+
+def test_a_finished_solve_does_not_resume_from_its_own_checkpoint(tmp_path):
+    """Re-running a completed solve must redo it, not return a half-finished state."""
+    game = pyspiel.load_game(GAME_NAME, SMALL)
+    tree = SequentialAuctionTree(game)
+    checkpoint = str(tmp_path / "solve.ckpt")
+
+    first = own_profit_fictitious_play(tree, max_iterations=150, tolerance=0.0,
+                                       checkpoint_path=checkpoint, checkpoint_every=50)
+    again = own_profit_fictitious_play(tree, max_iterations=150, tolerance=0.0,
+                                       checkpoint_path=checkpoint, checkpoint_every=50)
+    assert again["iterations"] == first["iterations"]
+    assert again["nashconv"] == pytest.approx(first["nashconv"], rel=1e-12)
+
+
 def test_random_policy_is_a_valid_distribution():
     game = pyspiel.load_game(GAME_NAME, SMALL)
     tree = SequentialAuctionTree(game)

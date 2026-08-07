@@ -86,6 +86,7 @@ import hashlib
 import json
 import os
 import pickle
+import tempfile
 
 import matplotlib
 matplotlib.use("Agg")
@@ -220,6 +221,10 @@ WORKERS = min(32, (os.cpu_count() or 4))
 # grid, is what limits the contest.
 REFINE_BIDS = [7, 9, 13]
 REFINE_TOEHOLDS = [0.0, 0.15, 0.30]
+# The one refinement cell worth more compute, and how much more. See ``certify_deep``.
+DEEP_CELL_BIDS = 13
+DEEP_CELL_TOEHOLD = 0.15
+DEEP_EXTRA_RESTARTS = 12
 
 
 def _ensure_results_dir():
@@ -280,10 +285,7 @@ def _build_certificate(rows: list[dict], toehold: float, accept_eps: float,
     if top - bottom <= DETERRENCE_TIE:
         # Every admitted restart is the same conduct; there is no multiplicity to certify.
         return None
-    deterring = min((r for r in good if r["p_rival_deterred"] >= top - DETERRENCE_TIE),
-                    key=lambda r: r["nashconv"])
-    passive = min((r for r in good if r["p_rival_deterred"] <= bottom + DETERRENCE_TIE),
-                  key=lambda r: r["nashconv"])
+    deterring, passive = _representative_rivals(good)
     return {
         "toehold": toehold,
         "eps": max(deterring["nashconv"], passive["nashconv"]),
@@ -302,6 +304,26 @@ def _build_certificate(rows: list[dict], toehold: float, accept_eps: float,
         "tolerance": tolerance,
         "iterations": iterations,
     }
+
+
+def _representative_rivals(good: list[dict]) -> tuple[dict, dict]:
+    """Pick the most- and least-deterring profiles, breaking ties toward the tightest solve.
+
+    Shared by the certificate (Table 1) and the preemption figure (Figure 1) because they
+    read the same solves and must not disagree about which two profiles represent a
+    toehold. A plain argmax over deterrence lets numerical noise choose: several restarts
+    sit within ~1e-5 of each other, and the one that overshoots is the one that has not
+    settled, so it also carries the loosest NashConv. At toehold 0.15 that picked a
+    profile at eps 3.0e-05 over three at eps ~3.3e-06 and moved the reported jump premium
+    by a factor of six.
+    """
+    top = max(r["p_rival_deterred"] for r in good)
+    bottom = min(r["p_rival_deterred"] for r in good)
+    deterring = min((r for r in good if r["p_rival_deterred"] >= top - DETERRENCE_TIE),
+                    key=lambda r: r["nashconv"])
+    passive = min((r for r in good if r["p_rival_deterred"] <= bottom + DETERRENCE_TIE),
+                  key=lambda r: r["nashconv"])
+    return deterring, passive
 
 
 def _write_certificate(certificates: list[dict], path: str | None = None) -> None:
@@ -393,14 +415,34 @@ def _solve_job(job: tuple) -> dict:
 
     game = pyspiel.load_game("dealgame_sequential_takeover", params)
     tree = SequentialAuctionTree(game)
+    # One checkpoint per solve, beside its cache entry and keyed the same way, so a
+    # machine that reboots mid-study resumes each cell instead of restarting it. The
+    # 13-level certify cells are ~100h apiece; without this a reboot on day four costs
+    # the whole run.
     result = own_profit_fictitious_play(
         tree, max_iterations=iterations, tolerance=tolerance,
-        initial_policies=_restart_policies(tree, restart))
-    stats = equilibrium_statistics(tree, result["policy0"], result["policy1"])
-    stats.update(nashconv=result["nashconv"], converged=result["converged"],
+        initial_policies=_restart_policies(tree, restart),
+        checkpoint_path=os.path.join(CACHE_DIR, f"{_cache_key(job)}.ckpt"))
+    # Certify the tightest profile the run visited, not the one it happened to stop on.
+    # These are the same object on a solve that converged; they diverge by orders of
+    # magnitude on one that cycled, which is precisely the case the old code reported
+    # wrongly. ``wander`` is that gap, kept so a reader can tell the two apart.
+    stats = equilibrium_statistics(tree, result["best_policy0"], result["best_policy1"])
+    stats.update(nashconv=result["best_nashconv"], converged=result["converged"],
                  iterations=result["iterations"], restart=restart,
-                 params=params, policy1=result["policy1"])
+                 params=params, policy1=result["best_policy1"],
+                 best_iteration=result["best_iteration"],
+                 final_nashconv=result["nashconv"],
+                 wander=result["nashconv"] / max(result["best_nashconv"], 1e-300))
     return stats
+
+
+# Bump whenever _solve_job changes what a cached entry *means*, not just what it costs.
+# v2: solves certify the best iterate rather than the final one, so a v1 entry carries a
+# different (looser, and on a cycling cell wildly looser) NashConv for the same key. The
+# cache directory is gitignored, so without this a stale entry would be served silently
+# and the paper would mix two definitions of its own certificate.
+_SOLVE_SCHEMA_VERSION = 2
 
 
 def _cache_key(job: tuple) -> str:
@@ -409,9 +451,24 @@ def _cache_key(job: tuple) -> str:
     # to differ in budget too; tightening the tolerance alone would have silently served
     # the looser cached solve, and the cache directory is gitignored so nothing would show.
     params, restart, iterations, tolerance = job
-    payload = json.dumps([sorted(params.items()), restart, iterations, repr(tolerance)],
-                         sort_keys=True)
+    payload = json.dumps([sorted(params.items()), restart, iterations, repr(tolerance),
+                          _SOLVE_SCHEMA_VERSION], sort_keys=True)
     return hashlib.sha1(payload.encode()).hexdigest()[:16]
+
+
+def _cache_result(path: str, stats: dict) -> None:
+    """Publish one finished solve into the shared cache, atomically.
+
+    Write-then-rename, with a temp file private to this writer. Two studies run
+    concurrently share this cache and can land on the same cell, and the progress reader
+    scans it live, so a reader must never catch a half-written entry and a writer must
+    never rename away a file another writer still holds open.
+    """
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".",
+                               prefix=f"{os.path.basename(path)}.", suffix=".tmp")
+    with os.fdopen(fd, "wb") as handle:
+        pickle.dump(stats, handle)
+    os.replace(tmp, path)
 
 
 def _solve_many(jobs: list[tuple]) -> list[dict]:
@@ -423,7 +480,7 @@ def _solve_many(jobs: list[tuple]) -> list[dict]:
     (parameters, restart, budget, tolerance) tuple, so a cache hit is the same solve by
     construction and changing any of them invalidates it automatically.
     """
-    from concurrent.futures import ProcessPoolExecutor
+    from concurrent.futures import ProcessPoolExecutor, as_completed
 
     os.makedirs(CACHE_DIR, exist_ok=True)
     paths = [os.path.join(CACHE_DIR, f"{_cache_key(job)}.pkl") for job in jobs]
@@ -432,12 +489,25 @@ def _solve_many(jobs: list[tuple]) -> list[dict]:
     if len(todo) < len(jobs):
         print(f"  reusing {len(jobs) - len(todo)} cached solve(s)", flush=True)
 
+    # Longest-processing-time-first. With a fixed pool the makespan is decided by when the
+    # most expensive solves *start*, and cost runs away in the tree: a 13-level, 3-round
+    # cell is ~25x a 7-level one. Left in natural order the refinement grid dispatches all
+    # its cheap cells first and the expensive ones trail off the end, which cost several
+    # hours of wall clock on the previous run. Results are keyed by job rather than by
+    # position, so reordering changes nothing about what gets computed.
+    todo.sort(key=lambda item: -(item[0][2] * item[0][0]["num_bids"]
+                                 ** item[0][0]["num_rounds"]))
+
     if todo:
+        # Consume results as they finish, not in submission order. The jobs are dispatched
+        # longest-first, so submission order means nothing reaches disk until the slowest
+        # cell in the batch returns: on the refinement grid that held 18 finished solves in
+        # memory for days, invisible to the progress reader and to the sibling study that
+        # wanted the same cells, and all of them lost if the container died.
         with ProcessPoolExecutor(max_workers=WORKERS) as pool:
-            for (_, path), stats in zip(todo, pool.map(_solve_job,
-                                                       [job for job, _ in todo])):
-                with open(path, "wb") as handle:
-                    pickle.dump(stats, handle)
+            futures = {pool.submit(_solve_job, job): path for job, path in todo}
+            for future in as_completed(futures):
+                _cache_result(futures[future], future.result())
 
     results = []
     for path in paths:
@@ -464,10 +534,16 @@ def _solve_with_tree(params: dict, max_iterations: int | None = None,
     result = own_profit_fictitious_play(
         tree, max_iterations=budget, tolerance=TOLERANCE,
         initial_policies=initial_policies)
-    stats = equilibrium_statistics(tree, result["policy0"], result["policy1"])
-    stats["nashconv"] = result["nashconv"]
+    # Same rule as _solve_job: certify the tightest profile the solve visited. Nothing
+    # calls this helper today, and keeping it consistent is the point. Left reading the
+    # final iterate, it would hand a future study a quietly different definition of the
+    # paper's certificate, which is exactly how the two got mixed in the first place.
+    stats = equilibrium_statistics(tree, result["best_policy0"], result["best_policy1"])
+    stats["nashconv"] = result["best_nashconv"]
     stats["converged"] = result["converged"]
     stats["iterations"] = result["iterations"]
+    stats["final_nashconv"] = result["nashconv"]
+    stats["wander"] = result["nashconv"] / max(result["best_nashconv"], 1e-300)
     return tree, result, stats
 
 
@@ -837,6 +913,7 @@ def bid_grid_refinement_experiment():
                   f"deterrence in [{min(deter):.3f}, {max(deter):.3f}]  "
                   f"({len(good)}/{NUM_RESTARTS} converged)", flush=True)
 
+
     fig, (ax_value, ax_deter) = plt.subplots(1, 2, figsize=(12, 5))
     for num_bids in REFINE_BIDS:
         xs = [t for t in REFINE_TOEHOLDS if (num_bids, t) in cells]
@@ -844,38 +921,65 @@ def bid_grid_refinement_experiment():
             continue
         step = float(NUM_VALUES) / (num_bids - 1)
         label = f"{num_bids} levels (step {step:.2f})"
+        # Pin the colour to the resolution. fill_between and vlines advance the property
+        # cycle differently, so leaving it implicit gave the thirteen-level interval the
+        # same blue as the seven-level band and made the legend say two things at once.
+        colour = f"C{REFINE_BIDS.index(num_bids)}"
         ax_value.plot(xs, [cells[(num_bids, t)]["value0_min"] for t in xs],
-                      marker="o", label=label)
-        ax_deter.fill_between(xs, [cells[(num_bids, t)]["deter_min"] for t in xs],
-                              [cells[(num_bids, t)]["deter_max"] for t in xs],
-                              alpha=0.3, label=label)
+                      marker="o", color=colour, label=label)
+        # A resolution that certifies only one toehold has no band to fill between, and
+        # at thirteen levels that is the only cell that converges. Drawn as an explicit
+        # interval so the finest grid, which is the one the refinement question is about,
+        # does not silently vanish from the panel while keeping its legend entry.
+        lo = [cells[(num_bids, t)]["deter_min"] for t in xs]
+        hi = [cells[(num_bids, t)]["deter_max"] for t in xs]
+        if len(xs) > 1:
+            ax_deter.fill_between(xs, lo, hi, color=colour, alpha=0.3, label=label)
+        else:
+            ax_deter.vlines(xs, lo, hi, color=colour, linewidth=6, alpha=0.5, label=label)
+        ax_deter.plot(xs, lo, marker="_", ls="none", color=colour, markersize=12)
+        ax_deter.plot(xs, hi, marker="_", ls="none", color=colour, markersize=12)
     ax_value.set_xlabel("bidder 0 toehold $\\theta$")
     ax_value.set_ylabel("bidder 0 equilibrium profit")
-    ax_value.set_title("Profit is the same at every resolution")
+    # Not "profit is the same at every resolution": it is not. Changing the grid changes
+    # the game, so the equilibrium value moves with it (0.208, 0.184 and 0.174 at a zero
+    # toehold), and a title claiming otherwise would be contradicted by its own panel.
+    ax_value.set_title("Profit moves with the grid\n"
+                       "(a different grid is a different game)")
     ax_value.legend(fontsize=8)
     ax_value.grid(True, alpha=0.3)
     ax_deter.set_xlabel("bidder 0 toehold $\\theta$")
     ax_deter.set_ylabel("P(rival concedes immediately)")
-    ax_deter.set_title("The deterrence band does not close as the grid refines\n"
-                       "(so the multiplicity is not a discretisation artifact)")
+    ax_deter.set_title("Conduct does not settle as the grid refines\n"
+                       "(the low-deterrence branch is absent only at 7 levels)")
     ax_deter.legend(fontsize=8)
     ax_deter.grid(True, alpha=0.3)
-    fig.suptitle("Refining the price grid does not pin conduct down")
+    fig.suptitle("Refining the price grid does not pin conduct down", y=1.02)
     fig.savefig(os.path.join(RESULTS_DIR, "seq_grid_refinement.png"), dpi=130,
                 bbox_inches="tight")
     plt.close(fig)
 
+    # ``nashconv`` is the certified eps: the tightest profile the solve visited, which is
+    # the profile every other column on the row describes. ``final_nashconv`` is where the
+    # run happened to stop and ``wander`` is the ratio. A wander of 1.0 means the solve
+    # settled and the two coincide; a large one means it left its basin, which at these
+    # toeholds it does, and is the only column that tells the two cases apart.
     out_csv = os.path.join(RESULTS_DIR, "seq_grid_refinement.csv")
     with open(out_csv, "w", newline="") as fh:
         writer = csv.writer(fh, lineterminator="\n")
         writer.writerow(["num_bids", "bid_step", "toehold", "restart", "opening_bid",
-                         "p_rival_deterred", "value0", "nashconv", "reached_tolerance"])
-        for s in solved:
+                         "p_rival_deterred", "value0", "nashconv", "reached_tolerance",
+                         "final_nashconv", "wander", "best_iteration", "iterations",
+                         "accepted"])
+        for s in sorted(solved, key=lambda r: (r["params"]["num_bids"],
+                                               r["params"]["toehold"], r["restart"])):
             writer.writerow([
                 s["params"]["num_bids"], f"{s['params']['bid_step']:.6f}",
                 s["params"]["toehold"], s["restart"],
                 f"{s['expected_opening_bid0']:.6f}", f"{s['p_rival_deterred']:.6f}",
-                f"{s['value0']:.6f}", f"{s['nashconv']:.8f}", int(s["converged"])])
+                f"{s['value0']:.6f}", f"{s['nashconv']:.10f}", int(s["converged"]),
+                f"{s['final_nashconv']:.10f}", f"{s['wander']:.3f}",
+                s["best_iteration"], s["iterations"], int(_accepted(s))])
     print("  wrote results/seq_grid_refinement.{png,csv}")
 
 
@@ -931,13 +1035,18 @@ def preemption_incentive_experiment():
         # to a third of the time, and calling it "the rival who does not fold" turned the
         # middle panel into a near-copy of the left one under a caption saying the opposite.
         # ``is_passive`` records which ones actually earn that description.
-        deterring = max(good, key=lambda s: s["p_rival_deterred"])
-        passive = min(good, key=lambda s: s["p_rival_deterred"])
-        rivals = [("most-deterring-eqm", deterring["policy1"], deterring),
-                  ("least-deterring-eqm", passive["policy1"], passive),
-                  # Control: a rival bidding at random cannot be scared off, so paying a
-                  # premium to scare it off should earn exactly nothing.
-                  ("uniform-rival", tree.uniform_policy(1), None)]
+        # Every certified rival, not a chosen pair. Selecting one most-deterring and one
+        # least-deterring profile made the reported premium a property of the selection
+        # rule rather than of the game: profiles certified at the same eps, deterring with
+        # the same probability to five decimals, give premia eighteen-fold apart (2.7% and
+        # 49.0% at toehold 0.10). Deterrence is one scalar summary of a strategy defined
+        # over many information sets, and this curve probes exactly the off-path behaviour
+        # that scalar discards. The interval across certified rivals is what is identified.
+        rivals = [(f"eqm-restart-{s['restart']}", s["policy1"], s)
+                  for s in sorted(good, key=lambda s: s["restart"])]
+        # Control: a rival bidding at random cannot be scared off, so paying a premium to
+        # scare it off should earn exactly nothing.
+        rivals.append(("uniform-rival", tree.uniform_policy(1), None))
 
         for label, rival, source in rivals:
             bids, profits = opening_bid_profit_curve(tree, rival)
@@ -955,6 +1064,7 @@ def preemption_incentive_experiment():
             deterrence = source["p_rival_deterred"] if source else float("nan")
             rows.append({
                 "toehold": theta, "rival": label,
+                "restart": ("" if source is None else source["restart"]),
                 "rival_deterrence": deterrence,
                 "is_passive": ("" if source is None
                                else int(deterrence <= PASSIVE_MAX_DETERRENCE)),
@@ -966,8 +1076,15 @@ def preemption_incentive_experiment():
                 "premium_over_opening_at_zero": over_zero,
             })
             curves[(theta, label)] = (bids, profits)
-            print(f"  toehold {theta:.2f} vs {label:<14s} peak bid {bids[peak]:.3f} "
-                  f"premium {premium:+.4f} ({relative:+.1%})", flush=True)
+            print(f"  toehold {theta:.2f} vs {label:<16s} peak bid {bids[peak]:.3f} "
+                  f"premium {premium:+.4f} ({over_zero:+.1%} over opening at zero)",
+                  flush=True)
+
+        # The interval, which is the quantity the paper is entitled to quote.
+        spread = [r["premium_over_opening_at_zero"] for r in rows
+                  if r["toehold"] == theta and r["rival"] != "uniform-rival"]
+        print(f"  toehold {theta:.2f} RANGE over {len(spread)} certified rivals: "
+              f"{min(spread):+.1%} to {max(spread):+.1%}", flush=True)
 
     _ensure_results_dir()
     if not rows:
@@ -992,45 +1109,66 @@ def preemption_incentive_experiment():
             for bid, profit in zip(bids, profits):
                 writer.writerow([theta, label, f"{bid:.4f}", f"{profit:.6f}"])
 
-    _plot_preemption_panels(curves, {(r["toehold"], r["rival"]): r["rival_deterrence"]
-                                     for r in rows})
+    _plot_preemption_panels(curves, rows)
     print(f"  wrote {path}")
 
 
-def _plot_preemption_panels(curves: dict, deterrence: dict) -> None:
+def _plot_preemption_panels(curves: dict, rows: list[dict]) -> None:
     """Draw the three forced-opening panels (paper Figure 1).
 
-    Panel subtitles carry each rival's *measured* fold probability rather than a verbal
-    label. The middle rival used to be titled "the rival who does not fold" while in fact
-    folding up to a third of the time at some toeholds, which made the panel read as
-    evidence for the opposite of what it shows. Printing the number removes the question.
+    The panels used to be one hand-picked rival each. That presented the premium as a
+    number when it is an interval: certified profiles that deter identically give premia
+    an order of magnitude apart, so any single curve is a statement about the selection
+    rule. The middle panel is now that interval, which is the quantity the data pins down.
     """
-    panels = [("most-deterring-eqm", "vs the most-deterring equilibrium rival"),
-              ("least-deterring-eqm", "vs the least-deterring equilibrium rival"),
-              ("uniform-rival", "vs a rival bidding at random\n(cannot be deterred: control)")]
     thetas = sorted({theta for theta, _ in curves})
-    fig, axes = plt.subplots(1, 3, figsize=(14, 4.4), sharey=True)
-    for axis, (label, title) in zip(axes, panels):
-        folds = [deterrence[(theta, label)] for theta in thetas
-                 if (theta, label) in deterrence
-                 and not np.isnan(deterrence[(theta, label)])]
-        if folds:
-            title = (f"{title}\n(folds with prob. "
-                     f"{min(folds):.3f}–{max(folds):.3f})")
-        for theta in thetas:
-            if (theta, label) not in curves:
-                continue
-            bids, profits = curves[(theta, label)]
-            axis.plot(bids, profits, marker="o", markersize=3,
-                      label=f"toehold {theta:.2f}")
-        axis.set_xlabel("opening bid bidder 0 commits to")
-        axis.axhline(0.0, color="0.8", linewidth=0.8, zorder=0)
-        axis.set_title(title, fontsize=10)
-        axis.grid(True, alpha=0.3)
+    shade = {theta: plt.cm.viridis(i / max(len(thetas) - 1, 1))
+             for i, theta in enumerate(thetas)}
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.6))
+
+    for (theta, label), (bids, profits) in sorted(curves.items()):
+        if label == "uniform-rival":
+            continue
+        axes[0].plot(bids, profits, color=shade[theta], alpha=0.8, linewidth=1.1,
+                     marker="o", markersize=2.5)
+    axes[0].set_title("vs every certified equilibrium rival\n"
+                      "(one line per accepted restart)", fontsize=10)
     axes[0].set_ylabel("bidder 0 own profit (continuation optimal)")
+    axes[0].set_xlabel("opening bid bidder 0 commits to")
+
+    equilibria = [r for r in rows if r["rival"] != "uniform-rival"]
+    for theta in thetas:
+        premia = [float(r["premium_over_opening_at_zero"]) * 100 for r in equilibria
+                  if float(r["toehold"]) == theta]
+        if not premia:
+            continue
+        axes[1].vlines(theta, min(premia), max(premia), color=shade[theta], linewidth=2.5)
+        axes[1].plot([theta] * len(premia), premia, "o", color=shade[theta],
+                     markersize=5, markeredgecolor="white", markeredgewidth=0.5)
+    axes[1].set_title("how much the jump is worth is not pinned down\n"
+                      "(every certified rival, same game, same eps)", fontsize=10)
+    axes[1].set_ylabel("premium over opening at the bottom of the grid (%)")
+    axes[1].set_xlabel("toehold")
+    axes[1].set_xticks(thetas)
+    axes[1].set_xticklabels([f"{theta:.2f}" for theta in thetas])
+    axes[1].set_xlim(min(thetas) - 0.02, max(thetas) + 0.02)
+
+    for theta in thetas:
+        if (theta, "uniform-rival") not in curves:
+            continue
+        bids, profits = curves[(theta, "uniform-rival")]
+        axes[2].plot(bids, profits, color=shade[theta], marker="o", markersize=3,
+                     label=f"toehold {theta:.2f}")
+    axes[2].set_title("vs a rival bidding at random\n"
+                      "(cannot be deterred: control)", fontsize=10)
+    axes[2].set_xlabel("opening bid bidder 0 commits to")
     axes[2].legend(fontsize=7, ncol=2)
-    fig.suptitle("What a jump bid is worth, by how willing the rival is to fold: "
-                 "a premium where it folds, none where it will not")
+
+    for axis in axes:
+        axis.axhline(0.0, color="0.8", linewidth=0.8, zorder=0)
+        axis.grid(True, alpha=0.3)
+    fig.suptitle("A jump bid pays only against a rival that folds, and how much it pays "
+                 "is not pinned down by equilibrium")
     fig.tight_layout()
     fig.savefig(os.path.join(RESULTS_DIR, "seq_preemption_incentive.png"), dpi=160)
     plt.close(fig)
@@ -1055,13 +1193,10 @@ def replot_preemption_incentive_from_csv():
             bids.append(float(raw["opening_bid"]))
             profits.append(float(raw["own_profit"]))
 
-    deterrence = {}
     with open(inc_path, newline="") as fh:
-        for raw in csv.DictReader(fh):
-            deterrence[(float(raw["toehold"]), raw["rival"])] = float(
-                raw["rival_deterrence"])
+        rows = list(csv.DictReader(fh))
 
-    _plot_preemption_panels(curves, deterrence)
+    _plot_preemption_panels(curves, rows)
     print("  wrote results/seq_preemption_incentive.png")
 
 
@@ -1108,8 +1243,103 @@ def certify():
     preemption_incentive_experiment()
 
 
+def certify_deep():
+    """Add restarts to the one refinement cell where the basin may simply be unsampled.
+
+    At thirteen levels and a toehold of 0.15 no restart is certified, and the natural
+    reading is that the cell needs a bigger budget. The diagnostic says otherwise. Every
+    restart close to the acceptance bound is close because it cycled and the best-iterate
+    rule caught a favourable snapshot (the nearest has ``wander`` 121, meaning its final
+    iterate was 121x worse than its certified one), while every cleanly converged restart
+    sits 46x or further away. More iterations buy more cycling, not more precision.
+
+    What has *not* been tested is whether the interesting basin was ever sampled. At nine
+    levels the low-deterrence branch appears in exactly ONE of six restarts, so at thirteen
+    it may be missing by luck rather than by refinement. This adds twelve fresh starts at
+    the same budget, which is the failure mode this paper's own methodological caution
+    names: a sample of restarts that agree proves nothing, because the disagreeing basin
+    may not be in the sample.
+
+    Reports the whole cell, original restarts included, so the answer is a spread over
+    eighteen starts rather than over the twelve new ones alone.
+
+    Run detached; it is about four days on twelve cores:
+        docker run -d --name seq_certify_deep --restart on-failure \\
+            -v "<repo>:/work" -w /work imperfect-info:latest \\
+            python experiments/sequential_general_sum.py certify_deep
+    """
+    global MAX_ITERATIONS, TOLERANCE, ACCEPT_EPS, CERTIFY_RUN
+    MAX_ITERATIONS = CERTIFY_ITERATIONS
+    TOLERANCE = CERTIFY_TOLERANCE
+    ACCEPT_EPS = CERTIFY_ACCEPT_EPS
+    CERTIFY_RUN = True
+
+    step = float(NUM_VALUES) / (DEEP_CELL_BIDS - 1)
+    params = dict(BASE, num_bids=DEEP_CELL_BIDS, bid_step=step,
+                  toehold=DEEP_CELL_TOEHOLD)
+    total = NUM_RESTARTS + DEEP_EXTRA_RESTARTS
+    print(f"== DEEP RESTARTS: {DEEP_CELL_BIDS} levels, toehold "
+          f"{DEEP_CELL_TOEHOLD}, restarts 0..{total - 1} ==", flush=True)
+    print(f"  budget {CERTIFY_ITERATIONS} at tolerance {CERTIFY_TOLERANCE:.0e}, "
+          f"accepting NashConv <= {CERTIFY_ACCEPT_EPS:.0e}", flush=True)
+    print("  under test: is the low-deterrence branch absent at this resolution, or "
+          "was it never sampled?", flush=True)
+
+    jobs = [(params, restart, MAX_ITERATIONS, TOLERANCE) for restart in range(total)]
+    solved = _solve_many(jobs)
+
+    good = [s for s in solved if _accepted(s)]
+    print(f"  {len(good)}/{total} certified at NashConv <= {CERTIFY_ACCEPT_EPS:.0e}",
+          flush=True)
+    for stat in sorted(solved, key=lambda s: s["restart"]):
+        mark = "  " if _accepted(stat) else " x"
+        print(f"  {mark} restart {stat['restart']:>2}  eps {stat['nashconv']:.2e}  "
+              f"wander {stat['wander']:>7.1f}  deterrence {stat['p_rival_deterred']:.4f}  "
+              f"value0 {stat['value0']:.4f}", flush=True)
+
+    _ensure_results_dir()
+    path = _results_path("seq_grid_deep_restarts.csv")
+    with open(path, "w", newline="") as handle:
+        writer = csv.DictWriter(
+            handle, lineterminator="\n",
+            fieldnames=["num_bids", "bid_step", "toehold", "restart", "opening_bid",
+                        "p_rival_deterred", "value0", "nashconv", "final_nashconv",
+                        "wander", "best_iteration", "iterations", "accepted"])
+        writer.writeheader()
+        for stat in sorted(solved, key=lambda s: s["restart"]):
+            writer.writerow({
+                "num_bids": DEEP_CELL_BIDS, "bid_step": f"{step:.6f}",
+                "toehold": DEEP_CELL_TOEHOLD, "restart": stat["restart"],
+                "opening_bid": f"{stat['expected_opening_bid0']:.6f}",
+                "p_rival_deterred": f"{stat['p_rival_deterred']:.6f}",
+                "value0": f"{stat['value0']:.6f}",
+                "nashconv": f"{stat['nashconv']:.10f}",
+                "final_nashconv": f"{stat['final_nashconv']:.10f}",
+                "wander": f"{stat['wander']:.3f}",
+                "best_iteration": stat["best_iteration"],
+                "iterations": stat["iterations"],
+                "accepted": int(_accepted(stat))})
+    print(f"  wrote {path}", flush=True)
+
+    if not good:
+        print("  VERDICT  still nothing certified here; the cell does not converge at "
+              "this budget and the paper's limitation stands as written.", flush=True)
+        return
+    spread = [s["p_rival_deterred"] for s in good]
+    print(f"  VERDICT  deterrence over {len(good)} certified restart(s): "
+          f"{min(spread):.4f} to {max(spread):.4f}", flush=True)
+    if max(spread) - min(spread) > DETERRENCE_TIE:
+        print("           the multiplicity IS present at this resolution and a positive "
+              "toehold; earlier absence was an unsampled basin.", flush=True)
+    else:
+        print("           one conduct only, so the added starts found no second basin.",
+              flush=True)
+
+
 ENTRY_POINTS = {
     "certify": "the certified run behind paper Tables 1, 2 and Figure 1 (~20h)",
+    "certify_deep":
+        "12 extra restarts at 13 levels / toehold 0.15 (~4d): unsampled basin or not",
     "certificate_from_selection_csv":
         "rebuild the certificate from the committed per-restart CSV (~1s)",
     "toehold_preemption_experiment": "toehold sweep: profit pinned, conduct not",
@@ -1119,6 +1349,7 @@ ENTRY_POINTS = {
     "rounds_compounding_experiment": "rounds sweep (paper Table 2)",
     "equilibrium_selection_experiment": "restart spread + certificate (paper Table 1)",
     "bid_grid_refinement_experiment": "the same price range at three resolutions",
+    "certify_grid": "the refinement study at the certify budget (~4d; 13-level trees)",
     "main": "every study at the default 300k/1e-4 budget",
 }
 
